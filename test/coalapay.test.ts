@@ -33,7 +33,10 @@ describe('Coala Pay Token', function () {
     await mockToken.mint(buyer.address, SALE_AMOUNT)
 
     const mockTokenAsBuyer = await mockToken.connect(buyer)
-    await mockTokenAsBuyer.approve(await coalaPayContract.getAddress(), SALE_AMOUNT)
+    await mockTokenAsBuyer.approve(
+      await coalaPayContract.getAddress(),
+      SALE_AMOUNT
+    )
   })
 
   describe('Deployment', function () {
@@ -107,7 +110,8 @@ describe('Coala Pay Token', function () {
 
     it('Admin can mint token without payment', async function () {
       const coalaPayAsOwner = await coalaPayContract.connect(owner)
-      expect(await coalaPayAsOwner.adminMint(buyer.address, 0)).to.not.be.reverted
+      expect(await coalaPayAsOwner.adminMint(buyer.address, 0)).to.not.be
+        .reverted
 
       const tokenOwnerAddress = await coalaPayContract.ownerOf(0)
       expect(tokenOwnerAddress).to.equal(buyer.address)
@@ -151,10 +155,18 @@ describe('Coala Pay Token', function () {
       await coalaPayContract.addToken(contractArgs)
     })
 
-    it('Set token uri works', async function () {
+    it('Set base uri works', async function () {
       await expect(coalaPayContract.setBaseUri(TOKEN_URI)).to.not.be.reverted
       const tokenUri = await coalaPayContract.tokenURI(0)
       expect(tokenUri).to.equal(`${TOKEN_URI}0`)
+    })
+
+    it('Update token uri works', async function () {
+      const newUri = 'https://updateduri.com/0'
+      await expect(coalaPayContract.updateTokenUri(0, newUri)).to.not.be
+        .reverted
+      const tokenUri = await coalaPayContract.tokenURI(0)
+      expect(tokenUri).to.equal(newUri)
     })
 
     it('Cannot update unminted token', async function () {
@@ -163,7 +175,9 @@ describe('Coala Pay Token', function () {
         price: updatedPrice,
         paymentToken: updatedPaymentToken
       }
-      await expect(coalaPayContract.updateToken(1, updatedArgs)).to.be.revertedWith('Invalid token')
+      await expect(
+        coalaPayContract.updateToken(1, updatedArgs)
+      ).to.be.revertedWith('Invalid token')
     })
 
     it('Update all info works', async function () {
@@ -172,33 +186,14 @@ describe('Coala Pay Token', function () {
         price: updatedPrice,
         paymentToken: updatedPaymentToken
       }
-      await expect(coalaPayContract.updateToken(0, updatedArgs)).to.not.be.reverted
+      await expect(coalaPayContract.updateToken(0, updatedArgs)).to.not.be
+        .reverted
 
-      const updatedResponse = await coalaPayContract.getTokenInfo(0)
+      const updatedResponse = await coalaPayContract.tokenInfo(0)
       expect(updatedResponse).to.deep.equal([
         updatedPaymentReceiver,
         updatedPaymentToken,
         updatedPrice
-      ])
-    })
-
-    it('Update paymnent info works', async function () {
-      await expect(coalaPayContract.updateTokenPaymentInfo(0, updatedPaymentToken, updatedPrice)).to.not.be.reverted
-      const updatedResponse = await coalaPayContract.getTokenInfo(0)
-      expect(updatedResponse).to.deep.equal([
-        RECEIVER_ADDRESS,
-        updatedPaymentToken,
-        updatedPrice
-      ])
-    })
-
-    it('Update paymnent payment receiver works', async function () {
-      await expect(coalaPayContract.updateTokenReceiver(0, updatedPaymentReceiver)).to.not.be.reverted
-      const updatedResponse = await coalaPayContract.getTokenInfo(0)
-      expect(updatedResponse).to.deep.equal([
-        updatedPaymentReceiver,
-        await mockToken.getAddress(),
-        SALE_AMOUNT
       ])
     })
   })
