@@ -3,7 +3,7 @@ import { ethers } from "hardhat";
 async function main() {
   const coalaPayImpl = await ethers.getContractFactory('CoalaPay')
   const coalaPayContract = await coalaPayImpl.deploy()
-  const address = coalaPayContract.address
+  const address = await coalaPayContract.getAddress()
   console.log(`Coala Pay deployed to: ${address}`)
 }
 
