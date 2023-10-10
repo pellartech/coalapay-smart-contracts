@@ -8,6 +8,7 @@ import "@openzeppelin/contracts/utils/Strings.sol";
 
 contract CoalaPay is ERC721, Ownable {
     using Strings for uint256;
+
     event SetTokenInfo(TokenInfo tokenInfo);
 
     struct TokenInfo {
@@ -16,9 +17,10 @@ contract CoalaPay is ERC721, Ownable {
         uint256 price;
     }
 
-    uint256 totalSupply;
-    mapping(uint256 => TokenInfo) tokenInfo;
-    string baseUri;
+    uint256 public totalSupply;
+    mapping(uint256 => TokenInfo) public tokenInfo;
+    mapping(uint256 => string) public tokenUris;
+    string public baseUri;
 
     constructor() ERC721("Coala Pay", "CPAY") Ownable(msg.sender) {}
 
@@ -33,25 +35,15 @@ contract CoalaPay is ERC721, Ownable {
         emit SetTokenInfo(_tokenInfo);
     }
 
-    function updateTokenPaymentInfo(uint256 _tokenId, address _paymentToken, uint256 _price) external onlyOwner {
-        require(totalSupply > _tokenId, "Invalid token");
-        TokenInfo storage _tokenInfo = tokenInfo[_tokenId];
-        _tokenInfo.paymentToken = _paymentToken;
-        _tokenInfo.price = _price;
-        emit SetTokenInfo(_tokenInfo);
-    }
-
-    function updateTokenReceiver(uint256 _tokenId, address _receiver) external onlyOwner {
-        require(totalSupply > _tokenId, "Invalid token");
-        TokenInfo storage _tokenInfo = tokenInfo[_tokenId];
-        _tokenInfo.receiver = _receiver;
-        emit SetTokenInfo(_tokenInfo);
-    }
-
     function updateToken(uint256 _tokenId, TokenInfo calldata _tokenInfo) external onlyOwner {
         require(totalSupply > _tokenId, "Invalid token");
         tokenInfo[_tokenId] = _tokenInfo;
         emit SetTokenInfo(_tokenInfo);
+    }
+
+    function updateTokenUri(uint256 _tokenId, string calldata _tokenUri) external onlyOwner {
+        require(totalSupply > _tokenId, "Invalid token");
+        tokenUris[_tokenId] = _tokenUri;
     }
 
     function mint(address to, uint256 tokenId) external payable {
@@ -74,17 +66,16 @@ contract CoalaPay is ERC721, Ownable {
         }
     }
 
-    function getTokenInfo(uint256 _tokenId) external view returns (TokenInfo memory) {
-        return tokenInfo[_tokenId];
-    }
-
-    function tokenURI(uint256 tokenId)
+    function tokenURI(uint256 _tokenId)
         public
         view
         override
         returns (string memory)
     {
-        return string.concat(baseUri, tokenId.toString());
+        if (bytes(tokenUris[_tokenId]).length > 0) {
+            return tokenUris[_tokenId];
+        }
+        return string.concat(baseUri, _tokenId.toString());
     }
 
     function supportsInterface(bytes4 interfaceId)
