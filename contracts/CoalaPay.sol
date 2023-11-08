@@ -5,6 +5,7 @@ import "@openzeppelin/contracts/token/ERC721/ERC721.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/utils/Strings.sol";
+import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
 contract CoalaPay is ERC721, Ownable {
     using Strings for uint256;
@@ -75,8 +76,8 @@ contract CoalaPay is ERC721, Ownable {
             (bool feeAmountSuccess, ) = feeTo.call{ value: fee }("");
             require(feeAmountSuccess, "Transfer fee amount failed");
         } else {
-            IERC20(paymentToken).transferFrom(msg.sender, to, amount);
-            IERC20(paymentToken).transferFrom(msg.sender, feeTo, fee);
+            SafeERC20.safeTransferFrom(IERC20(paymentToken), msg.sender, to, amount);
+            SafeERC20.safeTransferFrom(IERC20(paymentToken), msg.sender, feeTo, fee);
         }
     }
 
