@@ -6,12 +6,14 @@ import { token } from '../typechain-types/@openzeppelin/contracts'
 const { parseEther } = ethers
 
 const RECEIVER_ADDRESS = '0xF8D7903Ea747943Ed32Dc5b25e2Cc51Cc17F5106'
-const FEE_RECEIVER = '0x96Bb94A6349a2Dd9CCB2d953c86ad64e949A9f88'
+const FEE_RECEIVER = '0x21c10038fC68d1f05400b2693dAe30772a1736a3'
 const SALE_AMOUNT = parseEther('0.1')
 const FEE_AMOUNT = (SALE_AMOUNT * BigInt(5)) / BigInt(100)
 const NAME = 'Coala Pay'
-const SYMBOL = 'CPAY'
+const SYMBOL = 'COALA'
+const INITIAL_TOKEN_URI = 'https://tokenuri.com/initial'
 const TOKEN_URI = 'https://tokenuri.com/'
+const PROJECT_ID = 'abc123'
 
 describe('Coala Pay Token', function () {
   let coalaPayContract: CoalaPay,
@@ -29,7 +31,7 @@ describe('Coala Pay Token', function () {
     buyer_2 = accounts[2]
 
     const coalaPayImpl = await ethers.getContractFactory('CoalaPay')
-    coalaPayContract = await coalaPayImpl.deploy()
+    coalaPayContract = await coalaPayImpl.deploy(NAME, SYMBOL, INITIAL_TOKEN_URI)
 
     const mockTokenImpl = await ethers.getContractFactory('TokenERC20')
     mockToken = await mockTokenImpl.deploy()
@@ -58,7 +60,7 @@ describe('Coala Pay Token', function () {
         price: SALE_AMOUNT,
         paymentToken: ethers.ZeroAddress
       }
-      await coalaPayContract.addToken(contractArgs)
+      await coalaPayContract.addToken(contractArgs, PROJECT_ID)
     })
 
     it('Displays correct amount and fee', async function () {
@@ -134,6 +136,11 @@ describe('Coala Pay Token', function () {
       const tokenOwnerAddress = await coalaPayContract.ownerOf(0)
       expect(tokenOwnerAddress).to.equal(buyer.address)
     })
+
+    it('Cannot mint a token that has not been set', async function () {
+      const coalaPayAsOwner = await coalaPayContract.connect(owner)
+      await expect(coalaPayAsOwner.adminMint(buyer.address, 10)).to.not.be.reverted
+    })
   })
 
   describe('ERC20 minting', function () {
@@ -143,7 +150,7 @@ describe('Coala Pay Token', function () {
         price: SALE_AMOUNT,
         paymentToken: await mockToken.getAddress()
       }
-      await coalaPayContract.addToken(contractArgs)
+      await coalaPayContract.addToken(contractArgs, PROJECT_ID)
     })
 
     it('Can mint with ERC20 token', async function () {
@@ -170,7 +177,7 @@ describe('Coala Pay Token', function () {
         price: SALE_AMOUNT,
         paymentToken: await mockToken.getAddress()
       }
-      await coalaPayContract.addToken(contractArgs)
+      await coalaPayContract.addToken(contractArgs, PROJECT_ID)
     })
 
     it('Set base uri works', async function () {
