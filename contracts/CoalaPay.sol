@@ -2,15 +2,17 @@
 pragma solidity ^0.8.9;
 
 import "@openzeppelin/contracts/token/ERC721/ERC721.sol";
-import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/utils/Strings.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import "@openzeppelin/contracts/access/AccessControl.sol";
 
-contract CoalaPay is ERC721, Ownable {
+contract CoalaPay is ERC721, AccessControl {
     using Strings for uint256;
 
-    event SetTokenInfo(TokenInfo tokenInfo);
+    event AddTokenInfo(uint256 tokenId, string projectId, TokenInfo tokenInfo);
+
+    event SetTokenInfo(uint256 tokenId, TokenInfo tokenInfo);
 
     struct TokenInfo {
         address receiver;
@@ -19,40 +21,47 @@ contract CoalaPay is ERC721, Ownable {
     }
 
     uint256 public totalSupply;
-    address public feeTo = 0x96Bb94A6349a2Dd9CCB2d953c86ad64e949A9f88;
+    address public feeTo = 0x21c10038fC68d1f05400b2693dAe30772a1736a3;
     uint256 public feePercent = 500; //5%
     mapping(uint256 => TokenInfo) public tokenInfos;
     mapping(uint256 => string) public tokenUris;
-    string public baseUri = "https://federation-stage.coalapay.org/api/v2/";
+    string public baseUri;
 
-    constructor() ERC721("Coala Pay", "CPAY") Ownable(msg.sender) {}
+    constructor(
+        string memory _name,
+        string memory _symbol,
+        string memory _baseURI
+    ) ERC721(_name, _symbol) {
+        _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
+        baseUri = _baseURI;
+    }
 
-    function setBaseUri(string calldata _baseUri) external onlyOwner {
+    function setBaseUri(string calldata _baseUri) external onlyRole(DEFAULT_ADMIN_ROLE) {
         baseUri = _baseUri;
     }
 
-    function setFee(uint256 _feePercent) external onlyOwner {
+    function setFee(uint256 _feePercent) external onlyRole(DEFAULT_ADMIN_ROLE) {
         feePercent = _feePercent;
     }
 
-    function setFeeTo(address _feeTo) external onlyOwner {
+    function setFeeTo(address _feeTo) external onlyRole(DEFAULT_ADMIN_ROLE) {
         feeTo = _feeTo;
     }
 
-    function addToken(TokenInfo calldata _tokenInfo) external onlyOwner {
+    function addToken(TokenInfo calldata _tokenInfo, string calldata _projectId) external onlyRole(DEFAULT_ADMIN_ROLE) {
         uint256 tokenId = totalSupply;
         tokenInfos[tokenId] = _tokenInfo;
         totalSupply ++;
-        emit SetTokenInfo(_tokenInfo);
+        emit AddTokenInfo(tokenId, _projectId, _tokenInfo);
     }
 
-    function updateToken(uint256 _tokenId, TokenInfo calldata _tokenInfo) external onlyOwner {
+    function updateToken(uint256 _tokenId, TokenInfo calldata _tokenInfo) external onlyRole(DEFAULT_ADMIN_ROLE) {
         require(totalSupply > _tokenId, "Invalid token");
         tokenInfos[_tokenId] = _tokenInfo;
-        emit SetTokenInfo(_tokenInfo);
+        emit SetTokenInfo(_tokenId, _tokenInfo);
     }
 
-    function updateTokenUri(uint256 _tokenId, string calldata _tokenUri) external onlyOwner {
+    function updateTokenUri(uint256 _tokenId, string calldata _tokenUri) external onlyRole(DEFAULT_ADMIN_ROLE) {
         require(totalSupply > _tokenId, "Invalid token");
         tokenUris[_tokenId] = _tokenUri;
     }
@@ -64,7 +73,7 @@ contract CoalaPay is ERC721, Ownable {
         transferPayment(_tokenInfo.receiver, _tokenInfo.paymentToken, _tokenInfo.price, fee);
     }
 
-    function adminMint(address to, uint256 tokenId) external onlyOwner {
+    function adminMint(address to, uint256 tokenId) external onlyRole(DEFAULT_ADMIN_ROLE) {
         _safeMint(to, tokenId);
     }
 
@@ -105,7 +114,7 @@ contract CoalaPay is ERC721, Ownable {
     function supportsInterface(bytes4 interfaceId)
         public
         view
-        override(ERC721)
+        override(ERC721, AccessControl)
         returns (bool)
     {
         return super.supportsInterface(interfaceId);
