@@ -180,4 +180,50 @@ contract CoalaPayCashPayments is AccessControl {
 
         emit FundingDisbursed(userId, cycleId, msg.sender, cycle.disbursementAmount);
     }
+
+        /// @notice Vendors can call this function to request funding for multiple users in a given cycle.
+    /// @param userIds The list of user IDs to redeem.
+    /// @param cycleId The payment cycle ID.
+    function bulkRequestFunding(
+        string[] memory userIds,
+        uint256 cycleId
+    ) external onlyRole(FUNDER_ROLE) {
+        PaymentCycle memory cycle = paymentCycles[cycleId];
+
+        require(cycle.startTimestamp != 0 && cycle.endTimestamp != 0, "Cycle not set");
+        require(
+            block.timestamp >= cycle.startTimestamp && block.timestamp <= cycle.endTimestamp,
+            "Cycle not active"
+        );
+
+        uint256 successfulDisbursements = 0;
+
+        for (uint256 i = 0; i < userIds.length; i++) {
+            string memory userId = userIds[i];
+
+            if (
+                whitelistedUsers[userId] &&
+                !hasRedeemed[userId][cycleId]
+            ) {
+                hasRedeemed[userId][cycleId] = true;
+
+                emit FundingDisbursed(userId, cycleId, msg.sender, cycle.disbursementAmount);
+                successfulDisbursements++;
+            }
+        }
+
+        if (successfulDisbursements > 0) {
+            uint256 totalAmount = cycle.disbursementAmount * successfulDisbursements;
+
+            require(
+                IERC20(cycle.paymentToken).transferFrom(
+                    holdingAccount,
+                    fundingAccount,
+                    totalAmount
+                ),
+                "Transfer failed"
+            );
+        }
+    }
+
 }
