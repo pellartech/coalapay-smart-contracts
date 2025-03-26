@@ -251,60 +251,37 @@ describe("CoalaPayCashPayments", function () {
 
   describe("bulkRequestFunding", () => {
     const userIds = ["user1", "user2", "user3", "user4"]
-
+  
     beforeEach(async () => {
       // Whitelist each user
       await cashPayments.grantRole(await cashPayments.WHITELIST_USER_ROLE(), admin.address)
       await cashPayments.bulkWhitelistUsers(userIds)
-
+  
       // Grant FUNDER_ROLE to vendor
       await cashPayments.grantRole(await cashPayments.FUNDER_ROLE(), vendor.address)
     })
-
-    it("bulk funding processes valid users, collects fees, and emits events", async function () {
-      // Let's remove user3 from the whitelist and pre-redeem user4
+  
+    it("reverts if any user is invalid (e.g., user3 is removed)", async function () {
+      // Let's remove user3 from the whitelist
       await cashPayments.removeWhitelistUser("user3")
-      await cashPayments.connect(vendor).requestFunding("user4", cycleId) // user4 is now redeemed
-
-      const feeDivisor = await cashPayments.FEE_DIVISOR()
-      const feePercent = await cashPayments.feePercent()
-
-      // Check balances before
-      const fundingBefore = await token.balanceOf(fundingAccount.address)
-      const feeReceiverBefore = await token.balanceOf(feeReceiver.address)
-
-      // Bulk request
-      const tx = await cashPayments.connect(vendor).bulkRequestFunding(userIds, cycleId)
-      const receipt = await tx.wait()
-
-      // Check balances after
-      const fundingAfter = await token.balanceOf(fundingAccount.address)
-      const feeReceiverAfter = await token.balanceOf(feeReceiver.address)
-
-      const successfulCount = 2
-      const totalDisbursed = disbursementAmount * BigInt(successfulCount)
-      const totalFee = (disbursementAmount * BigInt(feePercent) / BigInt(feeDivisor)) * BigInt(successfulCount)
-
-      expect(fundingAfter - fundingBefore).to.equal(totalDisbursed)
-      expect(feeReceiverAfter - feeReceiverBefore).to.equal(totalFee)
+      // Also, let's mark user4 as redeemed, for completeness
+      await cashPayments.connect(vendor).requestFunding("user4", cycleId)
+  
+      // Now, since user3 is invalid, calling bulkRequestFunding should revert
+      // with "User not whitelisted" for user3
+      await expect(
+        cashPayments.connect(vendor).bulkRequestFunding(userIds, cycleId)
+      ).to.be.revertedWith("User not whitelisted")
     })
-
-    it("does nothing if none of the users are valid", async function () {
-      // remove them all from the whitelist
+  
+    it("reverts if none of the users are valid", async function () {
+      // Remove them all from the whitelist => now all are invalid
       await cashPayments.bulkRemoveWhitelistUsers(userIds)
-
-      // Check balances before
-      const fundingBefore = await token.balanceOf(fundingAccount.address)
-      const feeBefore = await token.balanceOf(feeReceiver.address)
-
-      // Attempting bulk request
-      await cashPayments.connect(vendor).bulkRequestFunding(userIds, cycleId)
-
-      // Expect no changes
-      const fundingAfter = await token.balanceOf(fundingAccount.address)
-      const feeAfter = await token.balanceOf(feeReceiver.address)
-      expect(fundingAfter).to.equal(fundingBefore)
-      expect(feeAfter).to.equal(feeBefore)
+  
+      // Attempting bulk request with all invalid users => revert on first user
+      await expect(
+        cashPayments.connect(vendor).bulkRequestFunding(userIds, cycleId)
+      ).to.be.revertedWith("User not whitelisted")
     })
   })
 })
