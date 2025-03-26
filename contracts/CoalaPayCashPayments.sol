@@ -19,6 +19,12 @@ contract CoalaPayCashPayments is AccessControl {
     // The address to which funds will be transferred.
     address public fundingAccount;
 
+    // The address of the fee receiver.
+    address public feeReceiver;
+
+    // The percentage of the fee to be charged.
+    uint256 public feePercent;
+
     // Mapping to track whitelisted user IDs.
     mapping(string => bool) public whitelistedUsers;
 
@@ -54,17 +60,41 @@ contract CoalaPayCashPayments is AccessControl {
     );
     event HoldingAccountChanged(address oldAccount, address newAccount);
     event FundingAccountChanged(address oldAccount, address newAccount);
+    event FeeReceiverChanged(address oldReceiver, address newReceiver);
+    event FeePercentChanged(uint256 oldPercent, uint256 newPercent);
 
-    constructor(address _holdingAccount, address _fundingAccount) {
+    constructor(address _holdingAccount, address _fundingAccount, address _feeReceiver, uint256 _feePercent
+) {
         require(_holdingAccount != address(0), "Invalid holding account");
         holdingAccount = _holdingAccount;
 
         require(_fundingAccount != address(0), "Invalid funding account");
         fundingAccount = _fundingAccount;
 
+        require(_feeReceiver != address(0), "Invalid fee receiver");
+        feeReceiver = _feeReceiver;
+
+        feePercent = _feePercent;
+
         // Grant the deployer the default admin role
         _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
         _grantRole(FUNDER_ROLE, msg.sender);
+    }
+
+    /// @notice Admin function to update the fee receiver address.
+    /// @param newFeeReceiver The address of the new fee receiver.
+    function setFeeReceiver(address newFeeReceiver) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        require(newFeeReceiver != address(0), "Invalid fee receiver");
+        address old = feeReceiver;
+        feeReceiver = newFeeReceiver;
+        emit FeeReceiverChanged(old, newFeeReceiver);
+    }
+
+    /// @notice Admin function to update the fee percentage.
+    /// @param newFeePercent The new fee percentage.
+    function setFeePercent(uint256 newFeePercent) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        feePercent = newFeePercent;
+        emit FeePercentChanged(feePercent, newFeePercent);
     }
 
     /// @notice Admin function to update the holding account from which tokens will be transferred.
@@ -160,6 +190,13 @@ contract CoalaPayCashPayments is AccessControl {
         // Mark the user as redeemed for this cycle.
         hasRedeemed[userId][cycleId] = true;
 
+        // Transfer the fee amount
+        IERC20(cycle.paymentToken).transferFrom(
+            holdingAccount,
+            feeReceiver,
+            cycle.disbursementAmount * feePercent / 100
+        );
+
         // Transfer the funds from the holding account to the caller (vendor).
         // Make sure the contract is approved to spend at least 'disbursementAmount' of `holdingAccount`'s tokens.
         IERC20(cycle.paymentToken).transferFrom(
@@ -171,7 +208,7 @@ contract CoalaPayCashPayments is AccessControl {
         emit FundingDisbursed(userId, cycleId, msg.sender, cycle.disbursementAmount);
     }
 
-        /// @notice Vendors can call this function to request funding for multiple users in a given cycle.
+    /// @notice Vendors can call this function to request funding for multiple users in a given cycle.
     /// @param userIds The list of user IDs to redeem.
     /// @param cycleId The payment cycle ID.
     function bulkRequestFunding(
@@ -187,6 +224,7 @@ contract CoalaPayCashPayments is AccessControl {
         );
 
         uint256 successfulDisbursements = 0;
+        uint256 feeCollected = 0;
 
         for (uint256 i = 0; i < userIds.length; i++) {
             string memory userId = userIds[i];
@@ -199,6 +237,9 @@ contract CoalaPayCashPayments is AccessControl {
 
                 emit FundingDisbursed(userId, cycleId, msg.sender, cycle.disbursementAmount);
                 successfulDisbursements++;
+                
+                // add to fee
+                feeCollected += cycle.disbursementAmount * feePercent / 100;
             }
         }
 
@@ -210,6 +251,15 @@ contract CoalaPayCashPayments is AccessControl {
                     holdingAccount,
                     fundingAccount,
                     totalAmount
+                ),
+                "Transfer failed"
+            );
+
+            require(
+                IERC20(cycle.paymentToken).transferFrom(
+                    holdingAccount,
+                    feeReceiver,
+                    feeCollected
                 ),
                 "Transfer failed"
             );
