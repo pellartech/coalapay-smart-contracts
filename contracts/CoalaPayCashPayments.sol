@@ -10,6 +10,8 @@ interface IERC20 {
 
 contract CoalaPayCashPayments is AccessControl {
     bytes32 public constant FUNDER_ROLE = keccak256("FUNDER_ROLE");
+    bytes32 public constant WHITELIST_USER_ROLE = keccak256("WHITELIST_USER_ROLE");
+    bytes32 public constant PAYMENT_CYCLE_ROLE = keccak256("PAYMENT_CYCLE_ROLE");
 
     // The address from which tokens will be transferred.
     address public holdingAccount;
@@ -85,21 +87,21 @@ contract CoalaPayCashPayments is AccessControl {
 
     /// @notice Admin function to whitelist a user.
     /// @param userId The unique identifier for the user.
-    function whitelistUser(string memory userId) external onlyRole(DEFAULT_ADMIN_ROLE) {
+    function whitelistUser(string memory userId) external onlyRole(WHITELIST_USER_ROLE) {
         whitelistedUsers[userId] = true;
         emit UserWhitelisted(userId);
     }
 
     /// @notice Admin function to remove a user from the whitelist.
     /// @param userId The unique identifier for the user.
-    function removeWhitelistUser(string memory userId) external onlyRole(DEFAULT_ADMIN_ROLE) {
+    function removeWhitelistUser(string memory userId) external onlyRole(WHITELIST_USER_ROLE) {
         whitelistedUsers[userId] = false;
         emit UserRemovedFromWhitelist(userId);
     }
 
     /// @notice Admin function to bulk whitelist users.
     /// @param userIds Array of user IDs to whitelist.
-    function bulkWhitelistUsers(string[] memory userIds) external onlyRole(DEFAULT_ADMIN_ROLE) {
+    function bulkWhitelistUsers(string[] memory userIds) external onlyRole(WHITELIST_USER_ROLE) {
         for (uint256 i = 0; i < userIds.length; i++) {
             whitelistedUsers[userIds[i]] = true;
             emit UserWhitelisted(userIds[i]);
@@ -108,7 +110,7 @@ contract CoalaPayCashPayments is AccessControl {
 
     /// @notice Admin function to bulk remove users from the whitelist.
     /// @param userIds Array of user IDs to remove from the whitelist.
-    function bulkRemoveWhitelistUsers(string[] memory userIds) external onlyRole(DEFAULT_ADMIN_ROLE) {
+    function bulkRemoveWhitelistUsers(string[] memory userIds) external onlyRole(WHITELIST_USER_ROLE) {
         for (uint256 i = 0; i < userIds.length; i++) {
             whitelistedUsers[userIds[i]] = false;
             emit UserRemovedFromWhitelist(userIds[i]);
@@ -127,23 +129,11 @@ contract CoalaPayCashPayments is AccessControl {
         uint256 endTimestamp,
         address paymentToken,
         uint256 disbursementAmount
-    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
+    ) external onlyRole(PAYMENT_CYCLE_ROLE) {
         require(startTimestamp < endTimestamp, "Invalid time window");
         paymentCycles[cycleId] = PaymentCycle(startTimestamp, endTimestamp, paymentToken, disbursementAmount);
 
         emit PaymentCycleSet(cycleId, startTimestamp, endTimestamp, paymentToken, disbursementAmount);
-    }
-
-    /// @notice Admin function to grant FUNDER_ROLE to an account.
-    /// @param account The address to grant the role.
-    function grantFunderRole(address account) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        grantRole(FUNDER_ROLE, account);
-    }
-
-    /// @notice Admin function to revoke FUNDER_ROLE from an account.
-    /// @param account The address to revoke the role.
-    function revokeFunderRole(address account) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        revokeRole(FUNDER_ROLE, account);
     }
 
     /// @notice Vendor calls this function to request funding after scanning a user's QR code.
