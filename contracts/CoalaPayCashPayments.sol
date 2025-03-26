@@ -92,8 +92,10 @@ contract CoalaPayCashPayments is AccessControl {
     /// @notice Admin function to update the fee percentage.
     /// @param newFeePercent The new fee percentage.
     function setFeePercent(uint256 newFeePercent) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        require(newFeePercent <= FEE_DIVISOR, "Invalid fee percent");
+        uint256 oldFeePercent = feePercent;
         feePercent = newFeePercent;
-        emit FeePercentChanged(feePercent, newFeePercent);
+        emit FeePercentChanged(oldFeePercent, newFeePercent);
     }
 
     /// @notice Admin function to update the holding account from which tokens will be transferred.
@@ -172,31 +174,9 @@ contract CoalaPayCashPayments is AccessControl {
         string memory userId,
         uint256 cycleId
     ) external onlyRole(FUNDER_ROLE) {
-        // Check that the user is whitelisted.
-        require(whitelistedUsers[userId], "User not whitelisted");
-
-        // Retrieve payment cycle details and verify that the current time is within the cycle window.
         PaymentCycle memory cycle = paymentCycles[cycleId];
-        require(cycle.startTimestamp != 0 && cycle.endTimestamp != 0, "Cycle not set");
-        require(
-            block.timestamp >= cycle.startTimestamp && block.timestamp <= cycle.endTimestamp,
-            "Cycle not active"
-        );
-
-        // Ensure that the user has not already redeemed in this cycle.
-        require(!hasRedeemed[userId][cycleId], "Already redeemed in this cycle");
-
-        // Mark the user as redeemed for this cycle.
-        hasRedeemed[userId][cycleId] = true;
-
-        // Transfer the fee amount
-        SafeERC20.safeTransferFrom(IERC20(cycle.paymentToken), holdingAccount, feeReceiver, cycle.disbursementAmount * feePercent / FEE_DIVISOR);
-
-        // Transfer the funds from the holding account to the caller (vendor).
-        // Make sure the contract is approved to spend at least 'disbursementAmount' of `holdingAccount`'s tokens.
-        SafeERC20.safeTransferFrom(IERC20(cycle.paymentToken), holdingAccount, fundingAccount, cycle.disbursementAmount);
-
-        emit FundingDisbursed(userId, cycleId, msg.sender, cycle.disbursementAmount);
+        _validatePaymentCycle(cycle);
+        _requestFunding(userId, cycleId, cycle.disbursementAmount, cycle.paymentToken, msg.sender);
     }
 
     /// @notice Vendors can call this function to request funding for multiple users in a given cycle.
@@ -207,36 +187,58 @@ contract CoalaPayCashPayments is AccessControl {
         uint256 cycleId
     ) external onlyRole(FUNDER_ROLE) {
         PaymentCycle memory cycle = paymentCycles[cycleId];
-
-        require(cycle.startTimestamp != 0 && cycle.endTimestamp != 0, "Cycle not set");
-        require(
-            block.timestamp >= cycle.startTimestamp && block.timestamp <= cycle.endTimestamp,
-            "Cycle not active"
-        );
-
-        uint256 successfulDisbursements = 0;
-        uint256 feeCollected = 0;
+        _validatePaymentCycle(cycle);
 
         for (uint256 i = 0; i < userIds.length; i++) {
-            string memory userId = userIds[i];
-
-            if (
-                whitelistedUsers[userId] &&
-                !hasRedeemed[userId][cycleId]
-            ) {
-                hasRedeemed[userId][cycleId] = true;
-
-                emit FundingDisbursed(userId, cycleId, msg.sender, cycle.disbursementAmount);
-                successfulDisbursements++;
-                feeCollected += cycle.disbursementAmount * feePercent / FEE_DIVISOR;
-            }
-        }
-
-        if (successfulDisbursements > 0) {
-            uint256 totalAmount = cycle.disbursementAmount * successfulDisbursements;
-            SafeERC20.safeTransferFrom(IERC20(cycle.paymentToken), holdingAccount, fundingAccount, totalAmount);
-            SafeERC20.safeTransferFrom(IERC20(cycle.paymentToken), holdingAccount, feeReceiver, feeCollected);
+            _requestFunding(userIds[i], cycleId, cycle.disbursementAmount, cycle.paymentToken, msg.sender);
         }
     }
 
+    /// @notice Internal function to request funding for a user in a given cycle.
+    /// @param userId The unique user ID.
+    /// @param cycleId The payment cycle identifier.
+    /// @param amount The amount to be disbursed.
+    /// @param paymentToken The address of the ERC20 token used for disbursement.
+    /// @param vendor The address of the vendor requesting funding.
+    function _requestFunding(
+        string memory userId,
+        uint256 cycleId,
+        uint256 amount,
+        address paymentToken,
+        address vendor
+    ) private {
+        require(whitelistedUsers[userId], "User not whitelisted");
+        require(!hasRedeemed[userId][cycleId], "Already redeemed in this cycle");
+        hasRedeemed[userId][cycleId] = true;
+        _completePayment(userId, cycleId, amount, vendor, paymentToken);
+    }
+    
+    /// @notice Internal function to validate the payment cycle.
+    /// @param paymentCycle The payment cycle to validate.
+    function _validatePaymentCycle(PaymentCycle memory paymentCycle) private view {
+        require(paymentCycle.startTimestamp != 0 && paymentCycle.endTimestamp != 0, "Cycle not set");
+        require(
+            block.timestamp >= paymentCycle.startTimestamp && block.timestamp <= paymentCycle.endTimestamp,
+            "Cycle not active"
+        );
+    }
+
+    /// @notice Internal function to complete a payment and disburse funds.
+    /// @param userId The unique user ID.
+    /// @param cycleId The payment cycle identifier.
+    /// @param amount The amount to be disbursed.
+    /// @param vendor The address of the vendor requesting funding.
+    /// @param paymentToken The address of the ERC20 token used for disbursement.
+    function _completePayment(
+        string memory userId,
+        uint256 cycleId,
+        uint256 amount,
+        address vendor,
+        address paymentToken
+    ) private {
+        uint256 fee = amount * feePercent / FEE_DIVISOR;
+        SafeERC20.safeTransferFrom(IERC20(paymentToken), holdingAccount, fundingAccount, amount);
+        SafeERC20.safeTransferFrom(IERC20(paymentToken), holdingAccount, feeReceiver, fee);
+        emit FundingDisbursed(userId, cycleId, vendor, amount);
+    }
 }
