@@ -2,13 +2,12 @@
 pragma solidity ^0.8.0;
 
 import "@openzeppelin/contracts/access/AccessControl.sol";
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
-// Minimal interface for ERC20 token interactions.
-interface IERC20 {
-    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
-}
 
 contract CoalaPayCashPayments is AccessControl {
+    uint256 public constant FEE_DIVISOR = 10000;
     bytes32 public constant FUNDER_ROLE = keccak256("FUNDER_ROLE");
     bytes32 public constant WHITELIST_USER_ROLE = keccak256("WHITELIST_USER_ROLE");
     bytes32 public constant PAYMENT_CYCLE_ROLE = keccak256("PAYMENT_CYCLE_ROLE");
@@ -191,19 +190,11 @@ contract CoalaPayCashPayments is AccessControl {
         hasRedeemed[userId][cycleId] = true;
 
         // Transfer the fee amount
-        IERC20(cycle.paymentToken).transferFrom(
-            holdingAccount,
-            feeReceiver,
-            cycle.disbursementAmount * feePercent / 100
-        );
+        SafeERC20.safeTransferFrom(IERC20(cycle.paymentToken), holdingAccount, feeReceiver, cycle.disbursementAmount * feePercent / FEE_DIVISOR);
 
         // Transfer the funds from the holding account to the caller (vendor).
         // Make sure the contract is approved to spend at least 'disbursementAmount' of `holdingAccount`'s tokens.
-        IERC20(cycle.paymentToken).transferFrom(
-            holdingAccount,
-            fundingAccount,
-            cycle.disbursementAmount
-        );
+        SafeERC20.safeTransferFrom(IERC20(cycle.paymentToken), holdingAccount, fundingAccount, cycle.disbursementAmount);
 
         emit FundingDisbursed(userId, cycleId, msg.sender, cycle.disbursementAmount);
     }
@@ -237,32 +228,14 @@ contract CoalaPayCashPayments is AccessControl {
 
                 emit FundingDisbursed(userId, cycleId, msg.sender, cycle.disbursementAmount);
                 successfulDisbursements++;
-                
-                // add to fee
-                feeCollected += cycle.disbursementAmount * feePercent / 100;
+                feeCollected += cycle.disbursementAmount * feePercent / FEE_DIVISOR;
             }
         }
 
         if (successfulDisbursements > 0) {
             uint256 totalAmount = cycle.disbursementAmount * successfulDisbursements;
-
-            require(
-                IERC20(cycle.paymentToken).transferFrom(
-                    holdingAccount,
-                    fundingAccount,
-                    totalAmount
-                ),
-                "Transfer failed"
-            );
-
-            require(
-                IERC20(cycle.paymentToken).transferFrom(
-                    holdingAccount,
-                    feeReceiver,
-                    feeCollected
-                ),
-                "Transfer failed"
-            );
+            SafeERC20.safeTransferFrom(IERC20(cycle.paymentToken), holdingAccount, fundingAccount, totalAmount);
+            SafeERC20.safeTransferFrom(IERC20(cycle.paymentToken), holdingAccount, feeReceiver, feeCollected);
         }
     }
 
