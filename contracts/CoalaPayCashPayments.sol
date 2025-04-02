@@ -4,9 +4,9 @@ pragma solidity ^0.8.0;
 import "@openzeppelin/contracts/access/AccessControl.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
-
-contract CoalaPayCashPayments is AccessControl {
+contract CoalaPayCashPayments is AccessControl, ReentrancyGuard {
     uint256 public constant FEE_DIVISOR = 10000;
     bytes32 public constant FUNDER_ROLE = keccak256("FUNDER_ROLE");
     bytes32 public constant WHITELIST_USER_ROLE = keccak256("WHITELIST_USER_ROLE");
@@ -235,7 +235,7 @@ contract CoalaPayCashPayments is AccessControl {
         uint256 amount,
         address vendor,
         address paymentToken
-    ) private {
+    ) private nonReentrant {
         uint256 fee = amount * feePercent / FEE_DIVISOR;
         SafeERC20.safeTransferFrom(IERC20(paymentToken), holdingAccount, fundingAccount, amount);
         SafeERC20.safeTransferFrom(IERC20(paymentToken), holdingAccount, feeReceiver, fee);

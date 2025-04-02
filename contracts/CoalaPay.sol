@@ -6,8 +6,9 @@ import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/utils/Strings.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/access/AccessControl.sol";
+import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
-contract CoalaPay is ERC721, AccessControl {
+contract CoalaPay is ERC721, AccessControl, ReentrancyGuard {
     using Strings for uint256;
 
     event AddTokenInfo(uint256 tokenId, string projectId, TokenInfo tokenInfo);
@@ -66,7 +67,7 @@ contract CoalaPay is ERC721, AccessControl {
         tokenUris[_tokenId] = _tokenUri;
     }
 
-    function mint(address to, uint256 tokenId) external payable {
+    function mint(address to, uint256 tokenId) external payable nonReentrant {
         _safeMint(to, tokenId);
         TokenInfo memory _tokenInfo = tokenInfos[tokenId];
         uint256 fee = getFee(_tokenInfo.price);

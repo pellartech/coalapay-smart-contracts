@@ -4,8 +4,11 @@ pragma solidity ^0.8.9;
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/access/AccessControl.sol";
+import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
-contract CoalaPayPaymentSplitter is AccessControl {
+// ree
+
+contract CoalaPayPaymentSplitter is AccessControl, ReentrancyGuard {
     event CompletePayment(string projectId, uint256 amount, address paymentToken);
     uint256 public feePercent = 500; //5%
     address public feeTo;
@@ -30,7 +33,7 @@ contract CoalaPayPaymentSplitter is AccessControl {
         uint256 amount,
         address to,
         address paymentToken
-    ) external payable {
+    ) external payable nonReentrant {
         uint256 fee = getFee(amount);
         transferPayment(to, paymentToken, amount, fee);
         emit CompletePayment(projectId, amount, paymentToken);
