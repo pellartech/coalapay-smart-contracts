@@ -162,6 +162,16 @@ describe("CoalapayV2 Token", function () {
       expect(owner).to.equal(tokenInfo.donor);
     });
 
+    it("Sequence error", async function () {
+      let { tokenInfo, fee } = await coalaPayContract.getTokenInfo(0);
+      const coalaPayAsBuyer = await coalaPayContract.connect(buyer);
+      await expect(
+        coalaPayAsBuyer.payMilestone(0, 1, {
+          value: tokenInfo.price + fee,
+        })
+      ).to.be.revertedWith("Sequence error");
+    });
+
     it("Distributes funds to project", async function () {
       const { tokenInfo, fee } = await coalaPayContract.getTokenInfo(0);
       const coalaPayAsBuyer = await coalaPayContract.connect(buyer);

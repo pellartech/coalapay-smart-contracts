@@ -31,7 +31,7 @@ contract CoalaPayV2 is ERC721, AccessControl, ReentrancyGuard {
         Milestone[] milestones;
         address donor; // to be set when the donor funds
         bool refunded;
-        uint16 milestonesPaid;
+        uint256 milestonesPaid;
     }
 
     bytes32 public constant PROJECT_PAYER = keccak256("PROJECT_PAYER");
@@ -124,8 +124,9 @@ contract CoalaPayV2 is ERC721, AccessControl, ReentrancyGuard {
         TokenInfo storage _tokenInfo = tokenInfos[_tokenId];
         Milestone storage milestone = _tokenInfo.milestones[_milestoneId];
         require(!milestone.paid, "Milestone already paid");
-        require(milestone.date <= block.timestamp, "Milestone is not due");
+        require(_tokenInfo.milestonesPaid == _milestoneId, "Sequence error");
         milestone.paid = true;
+        milestone.date = block.timestamp;
 
         if (!_tokenInfo.inited) {
             _tokenInfo.inited = true;
@@ -133,10 +134,8 @@ contract CoalaPayV2 is ERC721, AccessControl, ReentrancyGuard {
 
             uint256 _feeAmount = getFee(_tokenInfo.price);
             _receivePayment(
-                address(this),
                 _tokenInfo.paymentToken,
                 _tokenInfo.price,
-                address(this),
                 _feeAmount
             );
         }
@@ -212,29 +211,27 @@ contract CoalaPayV2 is ERC721, AccessControl, ReentrancyGuard {
     }
 
     function _receivePayment(
-        address to,
         address paymentToken,
         uint256 amount,
-        address feeReceiver,
         uint256 fee
     ) internal {
         if (paymentToken == address(0)) {
             require(amount + fee == msg.value, "Incorrect token price");
-            (bool fullAmountSuccess, ) = to.call{value: amount}("");
+            (bool fullAmountSuccess, ) = address(this).call{
+                value: amount + fee
+            }("");
             require(fullAmountSuccess, "Transfer full amount failed");
-            (bool feeAmountSuccess, ) = feeReceiver.call{value: fee}("");
-            require(feeAmountSuccess, "Transfer fee amount failed");
         } else {
             SafeERC20.safeTransferFrom(
                 IERC20(paymentToken),
                 msg.sender,
-                to,
+                address(this),
                 amount
             );
             SafeERC20.safeTransferFrom(
                 IERC20(paymentToken),
                 msg.sender,
-                feeReceiver,
+                address(this),
                 fee
             );
         }
