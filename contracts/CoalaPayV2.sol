@@ -15,7 +15,7 @@ contract CoalaPayV2 is ERC721, AccessControl, ReentrancyGuard {
 
     event SetTokenInfo(uint256 tokenId, TokenInfo tokenInfo);
 
-    event MilestonePaid(uint256 tokenId, uint256 milestoneId, uint256 amount);
+    event MilestonePaid(uint256 tokenId, uint256 milestoneId, uint256 amount, address donor);
 
     struct Milestone {
         uint256 amount;
@@ -156,7 +156,7 @@ contract CoalaPayV2 is ERC721, AccessControl, ReentrancyGuard {
         );
         _tokenInfo.milestonesPaid++;
 
-        emit MilestonePaid(_tokenId, _milestoneId, milestone.amount);
+        emit MilestonePaid(_tokenId, _milestoneId, milestone.amount, _tokenInfo.donor);
 
         if (_tokenInfo.milestonesPaid == _tokenInfo.milestones.length) {
             _safeMint(_tokenInfo.donor, _tokenId);
