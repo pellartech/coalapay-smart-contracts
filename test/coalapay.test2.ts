@@ -14,6 +14,11 @@ const INITIAL_TOKEN_URI = "https://tokenuri.com/initial";
 const TOKEN_URI = "https://tokenuri.com/";
 const PROJECT_ID = "abc123";
 
+const PaymentType = {
+  ESCROW: 0,
+  AUTHORISED: 1,
+};
+
 describe("CoalapayV2 Token", function () {
   let coalaPayContract: CoalaPayV2,
     owner: SignerWithAddress,
@@ -60,9 +65,10 @@ describe("CoalapayV2 Token", function () {
     beforeEach(async () => {
       let contractArgs = {
         inited: false,
+        paymentType: PaymentType.ESCROW,
         receiver: RECEIVER_ADDRESS,
         price: SALE_AMOUNT,
-        paymentToken: ethers.ZeroAddress,
+        paymentToken: await mockToken.getAddress(),
         milestones: [
           {
             amount: parseEther("0.03"),
@@ -94,16 +100,6 @@ describe("CoalapayV2 Token", function () {
       expect(milestone.amount).to.equal(parseEther("0.03"));
       expect(milestone.paid).to.equal(false);
       expect(milestone.date).to.equal(0);
-    });
-
-    it("Fails to mint with incorrect eth amount", async function () {
-      const tokenId = 0;
-      const coalaPayAsBuyer = await coalaPayContract.connect(buyer);
-      await expect(
-        coalaPayAsBuyer.payMilestone(tokenId, 0, {
-          value: parseEther("0.001"),
-        })
-      ).to.be.revertedWith("Incorrect token price");
     });
 
     it("Mints with correct eth amount", async function () {
@@ -172,23 +168,6 @@ describe("CoalapayV2 Token", function () {
       ).to.be.revertedWith("Sequence error");
     });
 
-    it("Distributes funds to project", async function () {
-      const { tokenInfo, fee } = await coalaPayContract.getTokenInfo(0);
-      const coalaPayAsBuyer = await coalaPayContract.connect(buyer);
-      await coalaPayAsBuyer.payMilestone(0, 0, {
-        value: tokenInfo.price + fee,
-      });
-      let { milestone, fee: milestoneFee } =
-        await coalaPayContract.getMilestoneInfo(0, 0);
-      const projectBalance = await ethers.provider.getBalance(
-        tokenInfo.receiver
-      );
-      expect(projectBalance).to.equal(milestone.amount);
-
-      const feeBalance = await ethers.provider.getBalance(FEE_RECEIVER);
-      expect(feeBalance).to.equal(milestoneFee);
-    });
-
     it("Admin can mint token without payment", async function () {
       const tokenId = 0;
       const coalaPayAsOwner = await coalaPayContract.connect(owner);
@@ -204,52 +183,13 @@ describe("CoalapayV2 Token", function () {
       await expect(coalaPayAsOwner.adminMint(buyer.address, 10)).to.not.be
         .reverted;
     });
-
-    it("Refund should be possible", async function () {
-      let { tokenInfo, fee } = await coalaPayContract.getTokenInfo(0);
-      const coalaPayAsBuyer = await coalaPayContract.connect(buyer);
-      await coalaPayAsBuyer.payMilestone(0, 0, {
-        value: tokenInfo.price + fee,
-      });
-      ({ tokenInfo } = await coalaPayContract.getTokenInfo(0));
-      expect(tokenInfo.donor).to.equal(buyer.address);
-
-      let { milestone, fee: milestoneFee } =
-        await coalaPayContract.getMilestoneInfo(0, 0);
-      expect(milestone.paid).to.equal(true);
-      ({ milestone, fee: milestoneFee } =
-        await coalaPayContract.getMilestoneInfo(0, 1));
-      expect(milestone.paid).to.equal(false);
-
-      const beforeDonorBalance = await ethers.provider.getBalance(
-        buyer.address
-      );
-      const beforeContractBalance = await ethers.provider.getBalance(
-        await coalaPayContract.getAddress()
-      );
-
-      const coalaPayAsOwner = await coalaPayContract.connect(owner);
-      await expect(coalaPayAsOwner.refund(0)).to.not.be.reverted;
-
-      const afterDonorBalance = await ethers.provider.getBalance(buyer.address);
-      const afterContractBalance = await ethers.provider.getBalance(
-        await coalaPayContract.getAddress()
-      );
-      expect(milestone.amount).to.equal(parseEther("0.07"));
-      expect(milestoneFee).to.equal(parseEther("0.0035"));
-      expect(afterDonorBalance).to.equal(
-        beforeDonorBalance + milestone.amount + milestoneFee
-      );
-      expect(afterContractBalance).to.equal(
-        beforeContractBalance - milestone.amount - milestoneFee
-      );
-    });
   });
 
   describe("ERC20 minting", function () {
     beforeEach(async () => {
       let contractArgs = {
         inited: false,
+        paymentType: PaymentType.ESCROW,
         receiver: RECEIVER_ADDRESS,
         price: SALE_AMOUNT,
         paymentToken: await mockToken.getAddress(),
@@ -284,17 +224,146 @@ describe("CoalapayV2 Token", function () {
       const feeBalance = await mockToken.balanceOf(FEE_RECEIVER);
       expect(feeBalance).to.equal(milestoneFee);
     });
+
+    it("Distributes funds to project", async function () {
+      const { tokenInfo, fee } = await coalaPayContract.getTokenInfo(0);
+      const coalaPayAsBuyer = await coalaPayContract.connect(buyer);
+      await coalaPayAsBuyer.payMilestone(0, 0);
+      let { milestone, fee: milestoneFee } =
+        await coalaPayContract.getMilestoneInfo(0, 0);
+      const projectBalance = await mockToken.balanceOf(tokenInfo.receiver);
+      expect(projectBalance).to.equal(milestone.amount);
+
+      const feeBalance = await mockToken.balanceOf(FEE_RECEIVER);
+      expect(feeBalance).to.equal(milestoneFee);
+    });
+
+    it("Refund should be possible", async function () {
+      let { tokenInfo, fee } = await coalaPayContract.getTokenInfo(0);
+      const coalaPayAsBuyer = await coalaPayContract.connect(buyer);
+      await coalaPayAsBuyer.payMilestone(0, 0);
+      ({ tokenInfo } = await coalaPayContract.getTokenInfo(0));
+      expect(tokenInfo.donor).to.equal(buyer.address);
+
+      let { milestone, fee: milestoneFee } =
+        await coalaPayContract.getMilestoneInfo(0, 0);
+      expect(milestone.paid).to.equal(true);
+      ({ milestone, fee: milestoneFee } =
+        await coalaPayContract.getMilestoneInfo(0, 1));
+      expect(milestone.paid).to.equal(false);
+
+      const beforeDonorBalance = await mockToken.balanceOf(buyer.address);
+      const beforeContractBalance = await mockToken.balanceOf(
+        await coalaPayContract.getAddress()
+      );
+
+      const coalaPayAsOwner = await coalaPayContract.connect(owner);
+      await expect(coalaPayAsOwner.refund(0)).to.not.be.reverted;
+
+      const afterDonorBalance = await mockToken.balanceOf(buyer.address);
+      const afterContractBalance = await mockToken.balanceOf(
+        await coalaPayContract.getAddress()
+      );
+      expect(milestone.amount).to.equal(parseEther("0.07"));
+      expect(milestoneFee).to.equal(parseEther("0.0035"));
+      expect(afterDonorBalance).to.equal(
+        beforeDonorBalance + milestone.amount + milestoneFee
+      );
+      expect(afterContractBalance).to.equal(
+        beforeContractBalance - milestone.amount - milestoneFee
+      );
+    });
+  });
+
+  describe("ERC20 minting with authorised payment", function () {
+    beforeEach(async () => {
+      let contractArgs = {
+        inited: false,
+        paymentType: PaymentType.AUTHORISED,
+        receiver: RECEIVER_ADDRESS,
+        price: SALE_AMOUNT,
+        paymentToken: await mockToken.getAddress(),
+        milestones: [
+          {
+            amount: parseEther("0.03"),
+            paid: false,
+            date: 0,
+          },
+          {
+            amount: parseEther("0.07"),
+            paid: false,
+            date: 10,
+          },
+        ],
+        donor: ethers.ZeroAddress,
+        refunded: false,
+        milestonesPaid: 0,
+      };
+      await coalaPayContract.addToken(contractArgs, PROJECT_ID);
+    });
+
+    it("Can mint with ERC20 token", async function () {
+      const coalaPayAsBuyer = await coalaPayContract.connect(buyer);
+      await expect(coalaPayAsBuyer.payMilestone(0, 0)).to.not.be.reverted;
+
+      let { milestone, fee: milestoneFee } =
+        await coalaPayContract.getMilestoneInfo(0, 0);
+      const reveiverBalance = await mockToken.balanceOf(RECEIVER_ADDRESS);
+      expect(reveiverBalance).to.equal(milestone.amount);
+
+      const feeBalance = await mockToken.balanceOf(FEE_RECEIVER);
+      expect(feeBalance).to.equal(milestoneFee);
+
+      const contractBalance = await mockToken.balanceOf(
+        await coalaPayContract.getAddress()
+      );
+      expect(contractBalance).to.equal(0);
+    });
+
+    it("Distributes funds to project", async function () {
+      const { tokenInfo, fee } = await coalaPayContract.getTokenInfo(0);
+      const coalaPayAsBuyer = await coalaPayContract.connect(buyer);
+      await coalaPayAsBuyer.payMilestone(0, 0);
+      let { milestone, fee: milestoneFee } =
+        await coalaPayContract.getMilestoneInfo(0, 0);
+      const projectBalance = await mockToken.balanceOf(tokenInfo.receiver);
+      expect(projectBalance).to.equal(milestone.amount);
+
+      const feeBalance = await mockToken.balanceOf(FEE_RECEIVER);
+      expect(feeBalance).to.equal(milestoneFee);
+    });
+
+    it("Refund should not be possible", async function () {
+      let { tokenInfo, fee } = await coalaPayContract.getTokenInfo(0);
+      const coalaPayAsBuyer = await coalaPayContract.connect(buyer);
+      await coalaPayAsBuyer.payMilestone(0, 0);
+      ({ tokenInfo } = await coalaPayContract.getTokenInfo(0));
+      expect(tokenInfo.donor).to.equal(buyer.address);
+
+      let { milestone, fee: milestoneFee } =
+        await coalaPayContract.getMilestoneInfo(0, 0);
+      expect(milestone.paid).to.equal(true);
+      ({ milestone, fee: milestoneFee } =
+        await coalaPayContract.getMilestoneInfo(0, 1));
+      expect(milestone.paid).to.equal(false);
+
+      const coalaPayAsOwner = await coalaPayContract.connect(owner);
+      await expect(coalaPayAsOwner.refund(0)).to.be.revertedWith(
+        "Token is not escrow"
+      );
+    });
   });
 
   describe("Metadata Updates", function () {
     const updatedPrice = parseEther("1");
-    const updatedPaymentToken = ethers.ZeroAddress;
+    const updatedPaymentToken = "0xD24e0f48bA59A2627d141228bE7d595055B3BA09";
     const updatedPaymentReceiver = "0xD24e0f48bA59A2627d141228bE7d595055B3BA09";
     const updatedFee = (updatedPrice * BigInt(5)) / BigInt(100);
 
     beforeEach(async () => {
       let contractArgs = {
         inited: false,
+        paymentType: PaymentType.ESCROW,
         receiver: RECEIVER_ADDRESS,
         price: SALE_AMOUNT,
         paymentToken: await mockToken.getAddress(),
@@ -334,6 +403,7 @@ describe("CoalapayV2 Token", function () {
     it("Cannot update unminted token", async function () {
       const updatedArgs = {
         inited: false,
+        paymentType: PaymentType.ESCROW,
         receiver: updatedPaymentReceiver,
         price: updatedPrice,
         paymentToken: updatedPaymentToken,
@@ -361,6 +431,7 @@ describe("CoalapayV2 Token", function () {
     it("Cannot update with paid milestone", async function () {
       const updatedArgs = {
         inited: false,
+        paymentType: PaymentType.ESCROW,
         receiver: updatedPaymentReceiver,
         price: parseEther("0.1"),
         paymentToken: updatedPaymentToken,
@@ -390,6 +461,7 @@ describe("CoalapayV2 Token", function () {
     it("Update all info works", async function () {
       const updatedArgs = {
         inited: false,
+        paymentType: PaymentType.AUTHORISED,
         receiver: updatedPaymentReceiver,
         price: parseEther("1"),
         paymentToken: updatedPaymentToken,
@@ -422,6 +494,9 @@ describe("CoalapayV2 Token", function () {
       );
       expect(updatedResponse.tokenInfo.price).to.equal(updatedPrice);
       expect(updatedResponse.fee).to.equal(updatedFee);
+      expect(updatedResponse.tokenInfo.paymentType).to.equal(
+        PaymentType.AUTHORISED
+      );
     });
 
     it("Refund ERC20 token should be possible", async function () {

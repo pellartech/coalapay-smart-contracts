@@ -11,6 +11,11 @@ import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 contract CoalaPayV2 is ERC721, AccessControl, ReentrancyGuard {
     using Strings for uint256;
 
+    enum PaymentType {
+        ESCROW,
+        AUTHORISED
+    }
+
     event AddTokenInfo(uint256 tokenId, string projectId, TokenInfo tokenInfo);
 
     event SetTokenInfo(uint256 tokenId, TokenInfo tokenInfo);
@@ -25,6 +30,7 @@ contract CoalaPayV2 is ERC721, AccessControl, ReentrancyGuard {
 
     struct TokenInfo {
         bool inited;
+        PaymentType paymentType;
         address receiver; // the recipient address of the funds
         address paymentToken;
         uint256 price;
@@ -51,8 +57,6 @@ contract CoalaPayV2 is ERC721, AccessControl, ReentrancyGuard {
         _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
         baseUri = _baseURI;
     }
-
-    receive() external payable {}
 
     function setBaseUri(
         string calldata _baseUri
@@ -84,6 +88,7 @@ contract CoalaPayV2 is ERC721, AccessControl, ReentrancyGuard {
         for (uint256 i = 0; i < _tokenInfo.milestones.length; i++) {
             tokenInfo.milestones.push(_tokenInfo.milestones[i]);
         }
+        tokenInfo.paymentType = _tokenInfo.paymentType;
         tokenInfo.receiver = _tokenInfo.receiver;
         tokenInfo.paymentToken = _tokenInfo.paymentToken;
         tokenInfo.price = _tokenInfo.price;
@@ -103,6 +108,7 @@ contract CoalaPayV2 is ERC721, AccessControl, ReentrancyGuard {
         for (uint256 i = 0; i < _tokenInfo.milestones.length; i++) {
             tokenInfo.milestones.push(_tokenInfo.milestones[i]);
         }
+        tokenInfo.paymentType = _tokenInfo.paymentType;
         tokenInfo.receiver = _tokenInfo.receiver;
         tokenInfo.paymentToken = _tokenInfo.paymentToken;
         tokenInfo.price = _tokenInfo.price;
@@ -125,29 +131,48 @@ contract CoalaPayV2 is ERC721, AccessControl, ReentrancyGuard {
         Milestone storage milestone = _tokenInfo.milestones[_milestoneId];
         require(!milestone.paid, "Milestone already paid");
         require(_tokenInfo.milestonesPaid == _milestoneId, "Sequence error");
-        milestone.paid = true;
-        milestone.date = block.timestamp;
-
-        if (!_tokenInfo.inited) {
-            _tokenInfo.inited = true;
-            _tokenInfo.donor = msg.sender;
-
-            uint256 _feeAmount = getFee(_tokenInfo.price);
-            _receivePayment(
-                _tokenInfo.paymentToken,
-                _tokenInfo.price,
-                _feeAmount
-            );
-        }
-
         require(
-            hasRole(PROJECT_PAYER, msg.sender) ||
+            _tokenInfo.donor == address(0) ||
+                hasRole(PROJECT_PAYER, msg.sender) ||
                 msg.sender == _tokenInfo.donor,
             "Not project payer"
         );
+        milestone.paid = true;
+        milestone.date = block.timestamp;
+
+        address payer = msg.sender;
+
+        if (!_tokenInfo.inited) {
+            _tokenInfo.inited = true;
+            _tokenInfo.donor = payer;
+
+            if (_tokenInfo.paymentType == PaymentType.ESCROW) {
+                uint256 _feeAmount = getFee(_tokenInfo.price);
+                _receivePayment(
+                    payer,
+                    _tokenInfo.paymentToken,
+                    _tokenInfo.price,
+                    _feeAmount
+                );
+            }
+        }
+
+        payer = address(this);
+        if (_tokenInfo.paymentType == PaymentType.AUTHORISED) {
+            payer = _tokenInfo.donor;
+        }
 
         uint256 feeAmount = getFee(milestone.amount);
         _transferPayment(
+            payer,
+            address(this),
+            _tokenInfo.paymentToken,
+            milestone.amount,
+            address(this),
+            feeAmount
+        );
+        _transferPayment(
+            address(this),
             _tokenInfo.receiver,
             _tokenInfo.paymentToken,
             milestone.amount,
@@ -163,10 +188,16 @@ contract CoalaPayV2 is ERC721, AccessControl, ReentrancyGuard {
         }
     }
 
-    function refund(uint256 _tokenId) external onlyRole(DEFAULT_ADMIN_ROLE) {
+    function refund(
+        uint256 _tokenId
+    ) external onlyRole(DEFAULT_ADMIN_ROLE) nonReentrant {
         TokenInfo storage _tokenInfo = tokenInfos[_tokenId];
         require(!_tokenInfo.refunded, "Token is already refunded");
         require(_tokenInfo.donor != address(0), "Token is not initialized");
+        require(
+            _tokenInfo.paymentType == PaymentType.ESCROW,
+            "Token is not escrow"
+        );
         _tokenInfo.refunded = true;
 
         uint256 fee = 0;
@@ -177,6 +208,7 @@ contract CoalaPayV2 is ERC721, AccessControl, ReentrancyGuard {
             fee += getFee(_tokenInfo.milestones[i].amount);
         }
         _transferPayment(
+            address(this),
             _tokenInfo.donor,
             _tokenInfo.paymentToken,
             amount,
@@ -193,48 +225,47 @@ contract CoalaPayV2 is ERC721, AccessControl, ReentrancyGuard {
     }
 
     function _transferPayment(
+        address from,
         address to,
         address paymentToken,
         uint256 amount,
         address feeReceiver,
         uint256 fee
     ) internal {
-        if (paymentToken == address(0)) {
-            (bool fullAmountSuccess, ) = to.call{value: amount}("");
-            require(fullAmountSuccess, "Transfer full amount failed");
-            (bool feeAmountSuccess, ) = feeReceiver.call{value: fee}("");
-            require(feeAmountSuccess, "Transfer fee amount failed");
-        } else {
+        if (from == to) return;
+        if (from == address(this)) {
             SafeERC20.safeTransfer(IERC20(paymentToken), to, amount);
             SafeERC20.safeTransfer(IERC20(paymentToken), feeReceiver, fee);
+            return;
         }
+
+        SafeERC20.safeTransferFrom(IERC20(paymentToken), from, to, amount);
+        SafeERC20.safeTransferFrom(
+            IERC20(paymentToken),
+            from,
+            feeReceiver,
+            fee
+        );
     }
 
     function _receivePayment(
+        address from,
         address paymentToken,
         uint256 amount,
         uint256 fee
     ) internal {
-        if (paymentToken == address(0)) {
-            require(amount + fee == msg.value, "Incorrect token price");
-            (bool fullAmountSuccess, ) = address(this).call{
-                value: amount + fee
-            }("");
-            require(fullAmountSuccess, "Transfer full amount failed");
-        } else {
-            SafeERC20.safeTransferFrom(
-                IERC20(paymentToken),
-                msg.sender,
-                address(this),
-                amount
-            );
-            SafeERC20.safeTransferFrom(
-                IERC20(paymentToken),
-                msg.sender,
-                address(this),
-                fee
-            );
-        }
+        SafeERC20.safeTransferFrom(
+            IERC20(paymentToken),
+            from,
+            address(this),
+            amount
+        );
+        SafeERC20.safeTransferFrom(
+            IERC20(paymentToken),
+            from,
+            address(this),
+            fee
+        );
     }
 
     function tokenURI(
@@ -272,6 +303,17 @@ contract CoalaPayV2 is ERC721, AccessControl, ReentrancyGuard {
     }
 
     function _validateTokenInfo(TokenInfo calldata _tokenInfo) internal pure {
+        require(
+            _tokenInfo.paymentType == PaymentType.AUTHORISED ||
+                _tokenInfo.paymentType == PaymentType.ESCROW,
+            "Invalid payment type"
+        );
+        require(_tokenInfo.receiver != address(0), "Receiver is required");
+        require(
+            _tokenInfo.paymentToken != address(0),
+            "Payment token is required"
+        );
+        require(_tokenInfo.price > 0, "Price is required");
         require(_tokenInfo.milestones.length > 0, "Milestones are required");
         require(_tokenInfo.milestones.length < 11, "Too many milestones");
         uint256 totalMilestonesAmount = 0;
