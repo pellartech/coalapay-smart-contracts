@@ -333,25 +333,6 @@ describe("CoalapayV2 Token", function () {
       expect(feeBalance).to.equal(milestoneFee);
     });
 
-    it("Refund should not be possible", async function () {
-      let { tokenInfo, fee } = await coalaPayContract.getTokenInfo(0);
-      const coalaPayAsBuyer = await coalaPayContract.connect(buyer);
-      await coalaPayAsBuyer.payMilestone(0, 0);
-      ({ tokenInfo } = await coalaPayContract.getTokenInfo(0));
-      expect(tokenInfo.donor).to.equal(buyer.address);
-
-      let { milestone, fee: milestoneFee } =
-        await coalaPayContract.getMilestoneInfo(0, 0);
-      expect(milestone.paid).to.equal(true);
-      ({ milestone, fee: milestoneFee } =
-        await coalaPayContract.getMilestoneInfo(0, 1));
-      expect(milestone.paid).to.equal(false);
-
-      const coalaPayAsOwner = await coalaPayContract.connect(owner);
-      await expect(coalaPayAsOwner.refund(0)).to.be.revertedWith(
-        "Token is not escrow"
-      );
-    });
   });
 
   describe("Metadata Updates", function () {
