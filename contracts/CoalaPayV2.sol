@@ -129,6 +129,12 @@ contract CoalaPayV2 is ERC721, AccessControl, ReentrancyGuard {
     ) external payable nonReentrant {
         TokenInfo storage _tokenInfo = tokenInfos[_tokenId];
         Milestone storage milestone = _tokenInfo.milestones[_milestoneId];
+        require(_tokenId < totalSupply, "Invalid token");
+        require(
+            _milestoneId < _tokenInfo.milestones.length,
+            "Invalid milestone"
+        );
+        require(!_tokenInfo.refunded, "Token is refunded");
         require(!milestone.paid, "Milestone already paid");
         require(_tokenInfo.milestonesPaid == _milestoneId, "Sequence error");
         require(
