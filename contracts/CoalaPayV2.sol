@@ -200,27 +200,25 @@ contract CoalaPayV2 is ERC721, AccessControl, ReentrancyGuard {
         TokenInfo storage _tokenInfo = tokenInfos[_tokenId];
         require(!_tokenInfo.refunded, "Token is already refunded");
         require(_tokenInfo.donor != address(0), "Token is not initialized");
-        require(
-            _tokenInfo.paymentType == PaymentType.ESCROW,
-            "Token is not escrow"
-        );
         _tokenInfo.refunded = true;
 
-        uint256 fee = 0;
-        uint256 amount = 0;
-        for (uint256 i = 0; i < _tokenInfo.milestones.length; i++) {
-            if (_tokenInfo.milestones[i].paid) continue;
-            amount += _tokenInfo.milestones[i].amount;
-            fee += getFee(_tokenInfo.milestones[i].amount);
+        if (_tokenInfo.paymentType == PaymentType.ESCROW) {
+            uint256 fee = 0;
+            uint256 amount = 0;
+            for (uint256 i = 0; i < _tokenInfo.milestones.length; i++) {
+                if (_tokenInfo.milestones[i].paid) continue;
+                amount += _tokenInfo.milestones[i].amount;
+                fee += getFee(_tokenInfo.milestones[i].amount);
+            }
+            _transferPayment(
+                address(this),
+                _tokenInfo.donor,
+                _tokenInfo.paymentToken,
+                amount,
+                _tokenInfo.donor,
+                fee
+            );
         }
-        _transferPayment(
-            address(this),
-            _tokenInfo.donor,
-            _tokenInfo.paymentToken,
-            amount,
-            _tokenInfo.donor,
-            fee
-        );
     }
 
     function adminMint(
