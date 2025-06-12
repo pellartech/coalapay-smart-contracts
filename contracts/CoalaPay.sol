@@ -68,6 +68,7 @@ contract CoalaPay is ERC721, AccessControl, ReentrancyGuard {
     }
 
     function mint(address to, uint256 tokenId) external payable nonReentrant {
+        require(tokenId < totalSupply, "Invalid token");
         _safeMint(to, tokenId);
         TokenInfo memory _tokenInfo = tokenInfos[tokenId];
         uint256 fee = getFee(_tokenInfo.price);
