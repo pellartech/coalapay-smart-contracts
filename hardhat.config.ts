@@ -3,7 +3,15 @@ import "@nomicfoundation/hardhat-toolbox";
 import { config } from "dotenv";
 config();
 const hardhatConfig: HardhatUserConfig = {
-  solidity: "0.8.20",
+  solidity: {
+    version: "0.8.20",
+    settings: {
+      optimizer: {
+        enabled: true,
+        runs: 200
+      }
+    }
+  },
   networks: {
     sepolia: {
       url: process.env.SEPOLIA_PROVIDER_URL,
