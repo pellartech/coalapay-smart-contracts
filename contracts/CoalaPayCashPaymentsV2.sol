@@ -23,7 +23,7 @@ contract LastMileCashPayments is AccessControl, ReentrancyGuard, ERC721 {
     struct Batch {
         uint256 projectId; // which project this batch belongs to
         uint256 beneficiaries; // human-readable count (filled at process time)
-        uint256 amount; // amount paid (filled at process time)
+        uint256 amount; // sum of recipient amounts
         bool processed; // true once funds transferred
     }
 
@@ -43,6 +43,8 @@ contract LastMileCashPayments is AccessControl, ReentrancyGuard, ERC721 {
     mapping(uint256 => uint256) public nextBatchSeq; // projectId => next batch #
     mapping(uint256 => Project) public projects;
     mapping(uint256 => mapping(uint256 => Batch)) public batches; // projectId => batchId => Batch
+    mapping(uint256 => mapping(uint256 => mapping(string => uint256)))
+        public payments; // projectId => batchId => household => amount
 
     string private _baseTokenURI;
 
@@ -160,12 +162,12 @@ contract LastMileCashPayments is AccessControl, ReentrancyGuard, ERC721 {
 
     /**
      * @notice Prefund a project with tokens (budget + upfront fee).
-        * @dev This is used to transfer tokens from the donor to the contract
-        * before any batches are processed. The donor can later withdraw any
-        * unspent funds after the project is completed.
-        * @param projectId ID of the project to prefund.
-        * @dev The project must not be completed, must not have been paid yet,
-        * and must not have been prefunded already.
+     * @dev This is used to transfer tokens from the donor to the contract
+     * before any batches are processed. The donor can later withdraw any
+     * unspent funds after the project is completed.
+     * @param projectId ID of the project to prefund.
+     * @dev The project must not be completed, must not have been paid yet,
+     * and must not have been prefunded already.
      */
 
     function prefundProject(uint256 projectId) external nonReentrant {
@@ -206,48 +208,72 @@ contract LastMileCashPayments is AccessControl, ReentrancyGuard, ERC721 {
     }
 
     /**
-     * @notice Pay a previously created batch.
-     * @dev This transfers the total amount to the organisation and fee to the fee recipient.
-     * @param projectId     ID of the project this batch belongs to.
-     * @param batchId        ID returned by `createBatch`.
-     * @param totalPaid      Tokens to transfer to the organisation (ex-fee).
-     * @param beneficiaries  Number of households in the batch.
+     * @notice Add recipients to a batch.
+     * @dev This is called by the backend to add households and amounts
+     * to a batch before it is processed.
+     * @param projectId ID of the project this batch belongs to.
+     * @param batchId ID of the batch to add recipients to.
+     * @param recipients Array of household identifiers (e.g. hashes).
+     * @param amounts Array of amounts corresponding to each recipient.
      */
+    function addRecipients(
+        uint256 projectId,
+        uint256 batchId,
+        string[] calldata recipients,
+        uint256[] calldata amounts
+    ) external onlyRole(BATCH_PROCESSOR_ROLE) {
+        require(recipients.length == amounts.length, "len mismatch");
+        require(recipients.length > 0, "empty");
+
+        Batch storage b = batches[projectId][batchId];
+        Project storage p = projects[projectId];
+        require(!b.processed, "already processed");
+        require(!p.completed, "project done");
+
+        uint256 totalAmount = 0;
+
+        for (uint256 i; i < recipients.length; ++i) {
+            string memory hh = recipients[i];
+            uint256 amt = amounts[i];
+            require(amt > 0, "amount=0");
+            require(payments[projectId][batchId][hh] == 0, "household paid");
+
+            payments[projectId][batchId][hh] = amt;
+            totalAmount += amt;
+        }
+
+        b.amount += totalAmount;
+        b.beneficiaries += recipients.length;
+        p.paid += totalAmount;
+        p.beneficiaries += recipients.length;
+
+        require(p.paid <= p.budget, "exceeds budget");
+    }
 
     function processBatch(
         uint256 projectId,
-        uint256 batchId,
-        uint256 totalPaid,
-        uint256 beneficiaries
+        uint256 batchId
     ) external nonReentrant onlyRole(BATCH_PROCESSOR_ROLE) {
         Batch storage b = batches[projectId][batchId];
         require(!b.processed, "batch already processed");
-        require(totalPaid > 0, "amount=0");
+        require(b.amount > 0, "amount=0");
 
         Project storage p = projects[projectId];
         require(!p.completed, "project done");
-        require(p.paid + totalPaid <= p.budget, "exceeds budget");
 
-        uint256 feeAmount = getFee(totalPaid);
+        uint256 feeAmount = getFee(b.amount);
 
-        /* effects */
         b.processed = true;
-        b.amount = totalPaid;
-        b.beneficiaries = beneficiaries;
-
-        p.paid += totalPaid;
-        p.beneficiaries += beneficiaries;
         p.feePaid += feeAmount;
 
-        /* ───── interactions ───── */
-        _transferPayment(p, totalPaid, feeAmount);
+        _transferPayment(p, b.amount, feeAmount);
 
         emit BatchProcessed(
             projectId,
             batchId,
-            totalPaid,
+            b.amount,
             feeAmount,
-            beneficiaries
+            b.beneficiaries
         );
     }
 
