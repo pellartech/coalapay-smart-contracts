@@ -40,11 +40,9 @@ contract LastMileCashPayments is AccessControl, ReentrancyGuard, ERC721 {
     }
 
     uint256 public nextProjectId = 1;
-    uint256 public nextBatchId = 1;
-
+    mapping(uint256 => uint256) public nextBatchSeq; // projectId => next batch #
     mapping(uint256 => Project) public projects;
-    mapping(uint256 => Batch) public batches;
-    mapping(uint256 => mapping(bytes32 => bool)) public processedBatches;
+    mapping(uint256 => mapping(uint256 => Batch)) public batches; // projectId => batchId => Batch
 
     string private _baseTokenURI;
 
@@ -196,8 +194,8 @@ contract LastMileCashPayments is AccessControl, ReentrancyGuard, ERC721 {
         Project storage p = projects[projectId];
         require(projectId != 0 && !p.completed, "invalid project");
 
-        batchId = nextBatchId++;
-        batches[batchId] = Batch({
+        batchId = ++nextBatchSeq[projectId]; // starts at 1 per project
+        batches[projectId][batchId] = Batch({
             projectId: projectId,
             beneficiaries: 0,
             amount: 0,
@@ -209,20 +207,24 @@ contract LastMileCashPayments is AccessControl, ReentrancyGuard, ERC721 {
 
     /**
      * @notice Pay a previously created batch.
+     * @dev This transfers the total amount to the organisation and fee to the fee recipient.
+     * @param projectId     ID of the project this batch belongs to.
      * @param batchId        ID returned by `createBatch`.
      * @param totalPaid      Tokens to transfer to the organisation (ex-fee).
      * @param beneficiaries  Number of households in the batch.
      */
+
     function processBatch(
+        uint256 projectId,
         uint256 batchId,
         uint256 totalPaid,
         uint256 beneficiaries
     ) external nonReentrant onlyRole(BATCH_PROCESSOR_ROLE) {
-        Batch storage b = batches[batchId];
+        Batch storage b = batches[projectId][batchId];
         require(!b.processed, "batch already processed");
         require(totalPaid > 0, "amount=0");
 
-        Project storage p = projects[b.projectId];
+        Project storage p = projects[projectId];
         require(!p.completed, "project done");
         require(p.paid + totalPaid <= p.budget, "exceeds budget");
 
@@ -241,7 +243,7 @@ contract LastMileCashPayments is AccessControl, ReentrancyGuard, ERC721 {
         _transferPayment(p, totalPaid, feeAmount);
 
         emit BatchProcessed(
-            b.projectId,
+            projectId,
             batchId,
             totalPaid,
             feeAmount,
