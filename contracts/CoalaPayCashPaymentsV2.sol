@@ -14,6 +14,10 @@ contract LastMileCashPayments is AccessControl, ReentrancyGuard, ERC721 {
     bytes32 public constant BATCH_PROCESSOR_ROLE =
         keccak256("BATCH_PROCESSOR_ROLE");
 
+    /* ---------- Fee config ---------- */
+    address public feeTo = 0x21c10038fC68d1f05400b2693dAe30772a1736a3;
+    uint256 public feePercent = 500; // 5 % (basis-points)
+
     /* ---------- Storage ---------- */
 
     struct Batch {
@@ -30,6 +34,7 @@ contract LastMileCashPayments is AccessControl, ReentrancyGuard, ERC721 {
         uint256 budget;
         uint256 paid;
         uint256 beneficiaries;
+        uint256 feePaid;
         bool prefunded;
         bool completed;
     }
@@ -58,20 +63,25 @@ contract LastMileCashPayments is AccessControl, ReentrancyGuard, ERC721 {
         uint256 indexed projectId,
         uint256 indexed batchId,
         uint256 batchAmount,
+        uint256 feeAmount,
         uint256 beneficiaryCount
     );
     event ProjectCompleted(
         uint256 indexed projectId,
         address donor,
         uint256 beneficiaries,
-        uint256 paid
+        uint256 paid,
+        uint256 feePaid
     );
     event BaseURISet(string oldBase, string newBase);
     event ProjectPrefunded(
         uint256 indexed projectId,
         address indexed donor,
-        uint256 budget
+        uint256 budget,
+        uint256 fee
     );
+    event FeePercentUpdated(uint256 oldFee, uint256 newFee);
+    event FeeToUpdated(address oldAddr, address newAddr);
 
     /* ---------- Constructor ---------- */
     constructor(
@@ -91,6 +101,25 @@ contract LastMileCashPayments is AccessControl, ReentrancyGuard, ERC721 {
         _baseTokenURI = newBase;
     }
 
+    function setFeePercent(
+        uint256 newPercent
+    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        require(newPercent <= 10_000, "fee>100%");
+        emit FeePercentUpdated(feePercent, newPercent);
+        feePercent = newPercent;
+    }
+
+    function setFeeTo(address newFeeTo) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        require(newFeeTo != address(0), "feeTo=0");
+        emit FeeToUpdated(feeTo, newFeeTo);
+        feeTo = newFeeTo;
+    }
+
+    /* ---------- Fee helper ---------- */
+    function getFee(uint256 _amount) public view returns (uint256) {
+        return (_amount * feePercent) / 10_000;
+    }
+
     /* ---------- Project lifecycle ---------- */
     function createProject(
         address organisation,
@@ -98,7 +127,12 @@ contract LastMileCashPayments is AccessControl, ReentrancyGuard, ERC721 {
         uint256 budget,
         address donor,
         string calldata projectKey
-    ) external nonReentrant onlyRole(DEFAULT_ADMIN_ROLE) returns (uint256 projectId) {
+    )
+        external
+        nonReentrant
+        onlyRole(DEFAULT_ADMIN_ROLE)
+        returns (uint256 projectId)
+    {
         require(organisation != address(0), "organisation=0");
         require(budget > 0, "budget=0");
 
@@ -110,6 +144,7 @@ contract LastMileCashPayments is AccessControl, ReentrancyGuard, ERC721 {
             budget: budget,
             paid: 0,
             beneficiaries: 0,
+            feePaid: 0,
             prefunded: false,
             completed: false
         });
@@ -126,7 +161,7 @@ contract LastMileCashPayments is AccessControl, ReentrancyGuard, ERC721 {
     }
 
     /**
-        * @notice Prefund a project with tokens.
+     * @notice Prefund a project with tokens (budget + upfront fee).
         * @dev This is used to transfer tokens from the donor to the contract
         * before any batches are processed. The donor can later withdraw any
         * unspent funds after the project is completed.
@@ -135,22 +170,22 @@ contract LastMileCashPayments is AccessControl, ReentrancyGuard, ERC721 {
         * and must not have been prefunded already.
      */
 
-    function prefundProject(
-        uint256 projectId
-    ) external nonReentrant {
+    function prefundProject(uint256 projectId) external nonReentrant {
         Project storage p = projects[projectId];
         require(projectId != 0 && !p.completed, "invalid project");
         require(p.paid == 0, "already paid");
-        require(!p.prefunded, "not prefunded");
+        require(!p.prefunded, "already prefunded");
+
+        uint256 upfrontFee = getFee(p.budget);
+        uint256 total = p.budget + upfrontFee;
+
         p.prefunded = true;
-        p.token.safeTransferFrom(msg.sender, address(this), p.budget);
-        emit ProjectPrefunded(
-            projectId,
-            msg.sender,
-            p.budget
-        );
+        p.token.safeTransferFrom(msg.sender, address(this), total);
+
+        emit ProjectPrefunded(projectId, msg.sender, p.budget, upfrontFee);
     }
 
+    /* ---------- Batch handling ---------- */
     /**
      * @notice Register a new batch for a given project.
      * @dev Callable by the same backend that later calls `processBatch`.
@@ -175,7 +210,7 @@ contract LastMileCashPayments is AccessControl, ReentrancyGuard, ERC721 {
     /**
      * @notice Pay a previously created batch.
      * @param batchId        ID returned by `createBatch`.
-     * @param totalPaid      Tokens to transfer in this batch.
+     * @param totalPaid      Tokens to transfer to the organisation (ex-fee).
      * @param beneficiaries  Number of households in the batch.
      */
     function processBatch(
@@ -191,6 +226,8 @@ contract LastMileCashPayments is AccessControl, ReentrancyGuard, ERC721 {
         require(!p.completed, "project done");
         require(p.paid + totalPaid <= p.budget, "exceeds budget");
 
+        uint256 feeAmount = getFee(totalPaid);
+
         /* effects */
         b.processed = true;
         b.amount = totalPaid;
@@ -198,17 +235,23 @@ contract LastMileCashPayments is AccessControl, ReentrancyGuard, ERC721 {
 
         p.paid += totalPaid;
         p.beneficiaries += beneficiaries;
+        p.feePaid += feeAmount;
 
-        /* interactions */
-        if (p.prefunded) {
-            p.token.safeTransfer(p.organisation, totalPaid);
-        } else {
-            p.token.safeTransferFrom(p.donor, p.organisation, totalPaid);
-        }
+        /* ───── interactions ───── */
+        _transferPayment(p, totalPaid, feeAmount);
 
-        emit BatchProcessed(b.projectId, batchId, totalPaid, beneficiaries);
+        emit BatchProcessed(
+            b.projectId,
+            batchId,
+            totalPaid,
+            feeAmount,
+            beneficiaries
+        );
     }
 
+    /**
+     * @notice Finalise a project. Mints an NFT receipt and refunds any unused funds.
+     */
     function completeProject(uint256 projectId) external nonReentrant {
         Project storage p = projects[projectId];
         require(!p.completed, "already done");
@@ -218,12 +261,41 @@ contract LastMileCashPayments is AccessControl, ReentrancyGuard, ERC721 {
         );
         p.completed = true;
 
-        if (p.prefunded && p.budget > p.paid) {
-            p.token.safeTransfer(p.donor, p.budget - p.paid);
+        if (p.prefunded) {
+            uint256 principalLeft = p.budget - p.paid;
+            uint256 feeLeft = getFee(p.budget) - p.feePaid;
+            uint256 refund = principalLeft + feeLeft;
+
+            if (refund > 0) {
+                p.token.safeTransfer(p.donor, refund);
+            }
         }
 
         _safeMint(p.donor, projectId);
-        emit ProjectCompleted(projectId, p.donor, p.beneficiaries, p.paid);
+        emit ProjectCompleted(
+            projectId,
+            p.donor,
+            p.beneficiaries,
+            p.paid,
+            p.feePaid
+        );
+    }
+
+    /* ─────────── Internal helpers ─────────── */
+    function _transferPayment(
+        Project storage p,
+        uint256 amount,
+        uint256 fee
+    ) internal {
+        if (p.prefunded) {
+            // tokens already held by the contract
+            p.token.safeTransfer(p.organisation, amount);
+            p.token.safeTransfer(feeTo, fee);
+        } else {
+            // pull directly from donor
+            p.token.safeTransferFrom(p.donor, p.organisation, amount);
+            p.token.safeTransferFrom(p.donor, feeTo, fee);
+        }
     }
 
     /* ---------- Views ---------- */
