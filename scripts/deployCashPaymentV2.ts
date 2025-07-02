@@ -18,9 +18,8 @@ async function main() {
   console.log("Deploying LastMileCashPayments…");
 
   const Factory = await ethers.getContractFactory("LastMileCashPayments");
-//   const lmp = await Factory.deploy(BASE_URI, NFT_NAME, NFT_SYMBOL);
-  const lmp = await ethers.getContractAt("LastMileCashPayments", "0x3077318B61924895fb44096906c59A29b4F0e54d")
-
+  const lmp = await Factory.deploy(BASE_URI, NFT_NAME, NFT_SYMBOL);
+  
   await lmp.waitForDeployment();
   const contractAddress = await lmp.getAddress();
   console.log(`✅ Deployed at ${contractAddress}`);
