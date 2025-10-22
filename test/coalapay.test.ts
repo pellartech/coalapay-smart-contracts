@@ -163,6 +163,44 @@ describe('Coala Pay Token', function () {
       const feeBalance = await mockToken.balanceOf(FEE_RECEIVER)
       expect(feeBalance).to.equal(FEE_AMOUNT)
     })
+
+    it('Executor can mint on behalf of donor with ERC20', async function () {
+      const executor = accounts[3]
+      const EXECUTOR_ROLE = ethers.id('EXECUTOR_ROLE')
+
+      // grant executor role
+      await expect(coalaPayContract.grantRole(EXECUTOR_ROLE, executor.address)).to
+        .not.be.reverted
+
+      const coalaPayAsExecutor = await coalaPayContract.connect(executor)
+
+      // executor mints to donor using donor's allowance
+      await expect(
+        (coalaPayAsExecutor as any).executorMint(buyer.address, buyer.address, 0)
+      ).to.not.be.reverted
+
+      const receiverBalance = await mockToken.balanceOf(RECEIVER_ADDRESS)
+      expect(receiverBalance).to.equal(SALE_AMOUNT)
+
+      const feeBalance = await mockToken.balanceOf(FEE_RECEIVER)
+      expect(feeBalance).to.equal(FEE_AMOUNT)
+
+      const tokenOwner = await coalaPayContract.ownerOf(0)
+      expect(tokenOwner).to.equal(buyer.address)
+    })
+
+    it('Non-executor cannot call executorMint', async function () {
+      const nonExecutor = accounts[4]
+      const coalaPayAsNonExecutor = await coalaPayContract.connect(nonExecutor)
+
+      await expect(
+        (coalaPayAsNonExecutor as any).executorMint(
+          buyer.address,
+          buyer.address,
+          0
+        )
+      ).to.be.reverted
+    })
   })
 
   describe('Metadata Updates', function () {

@@ -9,6 +9,8 @@ import "@openzeppelin/contracts/access/AccessControl.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 contract CoalaPay is ERC721, AccessControl, ReentrancyGuard {
+    bytes32 public constant EXECUTOR_ROLE = keccak256("EXECUTOR_ROLE");
+
     using Strings for uint256;
 
     event AddTokenInfo(uint256 tokenId, string projectId, TokenInfo tokenInfo);
@@ -79,6 +81,15 @@ contract CoalaPay is ERC721, AccessControl, ReentrancyGuard {
         _safeMint(to, tokenId);
     }
 
+    function executorMint(address donor, address to, uint256 tokenId) external onlyRole(EXECUTOR_ROLE) {
+        require(tokenId < totalSupply, "Invalid token");
+        _safeMint(to, tokenId);
+        TokenInfo memory _tokenInfo = tokenInfos[tokenId];
+        require(_tokenInfo.paymentToken != address(0), "Payment token is not set");
+        uint256 fee = getFee(_tokenInfo.price);
+        transferPaymentFrom(donor, _tokenInfo.receiver, _tokenInfo.paymentToken, _tokenInfo.price, fee);
+    }
+
     function transferPayment(address to, address paymentToken, uint256 amount, uint256 fee) internal {
         if (paymentToken == address(0)) {
             require(amount + fee == msg.value, "Incorrect token price");
@@ -90,6 +101,11 @@ contract CoalaPay is ERC721, AccessControl, ReentrancyGuard {
             SafeERC20.safeTransferFrom(IERC20(paymentToken), msg.sender, to, amount);
             SafeERC20.safeTransferFrom(IERC20(paymentToken), msg.sender, feeTo, fee);
         }
+    }
+
+    function transferPaymentFrom(address from, address to, address paymentToken, uint256 amount, uint256 fee) internal {
+        SafeERC20.safeTransferFrom(IERC20(paymentToken), from, to, amount);
+        SafeERC20.safeTransferFrom(IERC20(paymentToken), from, feeTo, fee);
     }
 
     function tokenURI(uint256 _tokenId)
