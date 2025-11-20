@@ -1,4 +1,5 @@
 import { expect } from "chai";
+import { anyValue } from "@nomicfoundation/hardhat-chai-matchers/withArgs";
 import { ethers, network } from "hardhat";
 import { LastMileCashPayments, TokenERC20 } from "../typechain-types";
 import { SignerWithAddress } from "@nomicfoundation/hardhat-ethers/signers";
@@ -12,6 +13,9 @@ describe("LastMileCashPayments (v2 with fees)", () => {
   let organisation: SignerWithAddress;
   let processor: SignerWithAddress;
   let rando: SignerWithAddress;
+  let altFeeRecipient: SignerWithAddress;
+  let orgFeeRecipient1: SignerWithAddress;
+  let orgFeeRecipient2: SignerWithAddress;
   let feeTo: string;
 
   /* ───────────────────────── constants ───────────────────────── */
@@ -37,7 +41,7 @@ describe("LastMileCashPayments (v2 with fees)", () => {
 
   beforeEach(async () => {
     await network.provider.send("hardhat_reset", []);
-    [admin, donor, organisation, processor, rando] =
+    [admin, donor, organisation, processor, rando, altFeeRecipient, orgFeeRecipient1, orgFeeRecipient2] =
       await ethers.getSigners();
 
     token = (await (
@@ -78,7 +82,9 @@ describe("LastMileCashPayments (v2 with fees)", () => {
         await token.getAddress(),
         BUDGET,
         donor.address,
-        PROJECT_KEY
+        PROJECT_KEY,
+        [],
+        []
       );
       projectId = (((await tx.wait())!.logs[0]) as any).args.projectId;
 
@@ -142,6 +148,133 @@ describe("LastMileCashPayments (v2 with fees)", () => {
     });
   });
 
+  // removed per-project processing fee override tests (not in scope)
+
+  /* ───────────── Organization fees at completion (prefunded) ───────────── */
+  describe("organization fees distribution on completion (prefunded)", () => {
+    it("distributes org fees only on completion to multiple recipients and refunds unused", async () => {
+      // processing 5%, org fees 5% split as 3% + 2%
+      const PROC_BPS = 500n;
+      const ORG_BPS_1 = 300n;
+      const ORG_BPS_2 = 200n;
+      const ORG_RECIPS = [orgFeeRecipient1.address, orgFeeRecipient2.address];
+      const ORG_BPS = [Number(ORG_BPS_1), Number(ORG_BPS_2)];
+
+      const tx = await lmp.connect(admin).createProject(
+        organisation.address,
+        await token.getAddress(),
+        BUDGET,
+        donor.address,
+        PROJECT_KEY,
+        ORG_RECIPS,
+        ORG_BPS
+      );
+      const projectId = (((await tx.wait())!.logs[0]) as any).args.projectId as bigint;
+
+      const upfrontProc = (BUDGET * PROC_BPS) / 10_000n; // 50
+      const upfrontOrg = (BUDGET * (ORG_BPS_1 + ORG_BPS_2)) / 10_000n; // 50
+      const totalEscrow = BUDGET + upfrontProc + upfrontOrg; // 1100
+
+      await token.connect(donor).approve(await lmp.getAddress(), totalEscrow);
+      await lmp.connect(donor).prefundProject(projectId);
+
+      await lmp
+        .connect(admin)
+        .grantRole(await lmp.BATCH_PROCESSOR_ROLE(), processor.address);
+      const btx = await lmp.connect(processor).createBatch(projectId);
+      const batchId = (((await btx.wait())!.logs[0]) as any).args.batchId as bigint;
+      await lmp
+        .connect(processor)
+        .addRecipients(projectId, batchId, RECIPIENTS, AMOUNTS); // 200 paid
+      await lmp.connect(processor).processBatch(projectId, batchId);
+
+      const r1Start = await token.balanceOf(orgFeeRecipient1.address);
+      const r2Start = await token.balanceOf(orgFeeRecipient2.address);
+      const donorStart = await token.balanceOf(donor.address);
+
+      await lmp.connect(donor).completeProject(projectId);
+
+      const orgFeeTotalOnPaid = (BATCH_AMOUNT * (ORG_BPS_1 + ORG_BPS_2)) / 10_000n; // 10
+      const r1Amt = (orgFeeTotalOnPaid * ORG_BPS_1) / 10_000n; // 6
+      const r2Amt = orgFeeTotalOnPaid - r1Amt; // 4 (remainder to last recip in contract)
+
+      expect(await token.balanceOf(orgFeeRecipient1.address)).to.equal(
+        r1Start + r1Amt
+      );
+      expect(await token.balanceOf(orgFeeRecipient2.address)).to.equal(
+        r2Start + r2Amt
+      );
+
+      const principalLeft = BUDGET - BATCH_AMOUNT; // 800
+      const procFeeLeft = upfrontProc - (BATCH_AMOUNT * PROC_BPS) / 10_000n; // 40
+      const orgFeeLeft = upfrontOrg - orgFeeTotalOnPaid; // 40
+      const expectedRefund = principalLeft + procFeeLeft + orgFeeLeft; // 880
+      expect(await token.balanceOf(donor.address)).to.equal(
+        donorStart + expectedRefund
+      );
+    });
+  });
+
+  /* ───── Organization fees at completion (authorise-spend) ───── */
+  describe("organization fees distribution on completion (authorise-spend)", () => {
+    it("pulls org fees from donor on completion when not prefunded", async () => {
+      // processing 5%, org fees 5% split as 3% + 2%
+      const PROC_BPS = 500n;
+      const ORG_BPS_1 = 300n;
+      const ORG_BPS_2 = 200n;
+      const ORG_RECIPS = [orgFeeRecipient1.address, orgFeeRecipient2.address];
+      const ORG_BPS = [Number(ORG_BPS_1), Number(ORG_BPS_2)];
+
+      const tx = await lmp.connect(admin).createProject(
+        organisation.address,
+        await token.getAddress(),
+        BUDGET,
+        donor.address,
+        PROJECT_KEY,
+        ORG_RECIPS,
+        ORG_BPS
+      );
+      const projectId = (((await tx.wait())!.logs[0]) as any).args.projectId as bigint;
+
+      await lmp
+        .connect(admin)
+        .grantRole(await lmp.BATCH_PROCESSOR_ROLE(), processor.address);
+      const btx = await lmp.connect(processor).createBatch(projectId);
+      const batchId = (((await btx.wait())!.logs[0]) as any).args.batchId as bigint;
+      await lmp
+        .connect(processor)
+        .addRecipients(projectId, batchId, RECIPIENTS, AMOUNTS); // 200 paid
+
+      // Approve enough for batch (principal + proc fee) and later completion org fee
+      const batchProcFee = (BATCH_AMOUNT * PROC_BPS) / 10_000n; // 10
+      const orgFeeOnPaid = (BATCH_AMOUNT * (ORG_BPS_1 + ORG_BPS_2)) / 10_000n; // 10
+      const approval = BUDGET + batchProcFee + orgFeeOnPaid; // generous
+      await token.connect(donor).approve(await lmp.getAddress(), approval);
+
+      await lmp.connect(processor).processBatch(projectId, batchId);
+
+      const r1Start = await token.balanceOf(orgFeeRecipient1.address);
+      const r2Start = await token.balanceOf(orgFeeRecipient2.address);
+
+      const completeTx = await lmp.connect(donor).completeProject(projectId);
+
+      const r1Amt = (orgFeeOnPaid * ORG_BPS_1) / 10_000n; // 6
+      const r2Amt = orgFeeOnPaid - r1Amt; // 4
+      expect(await token.balanceOf(orgFeeRecipient1.address)).to.equal(
+        r1Start + r1Amt
+      );
+      expect(await token.balanceOf(orgFeeRecipient2.address)).to.equal(
+        r2Start + r2Amt
+      );
+
+      await expect(completeTx)
+        .to.emit(lmp, "OrgFeesDistributed")
+        .withArgs(projectId, orgFeeOnPaid, ORG_RECIPS, [r1Amt, r2Amt]);
+      await expect(completeTx)
+        .to.emit(lmp, "ProjectCompleted")
+        .withArgs(projectId, donor.address, anyValue, anyValue, anyValue, orgFeeOnPaid);
+    });
+  });
   /* ─────────── Authorise-spend (no prefund) flow ─────────── */
   describe("authorise-spend flow", () => {
     let projectId: bigint;
@@ -153,7 +286,9 @@ describe("LastMileCashPayments (v2 with fees)", () => {
         await token.getAddress(),
         BUDGET,
         donor.address,
-        PROJECT_KEY
+        PROJECT_KEY,
+        [],
+        []
       );
       projectId = (((await tx.wait())!.logs[0]) as any).args.projectId;
 
@@ -211,7 +346,9 @@ describe("LastMileCashPayments (v2 with fees)", () => {
             await token.getAddress(),
             BUDGET,
             donor.address,
-            PROJECT_KEY
+            PROJECT_KEY,
+            [],
+            []
           )
       ).to.be.reverted;
     });
@@ -222,7 +359,9 @@ describe("LastMileCashPayments (v2 with fees)", () => {
         await token.getAddress(),
         BUDGET,
         donor.address,
-        PROJECT_KEY
+        PROJECT_KEY,
+        [],
+        []
       );
       const projectId = (((await tx.wait())!.logs[0]) as any).args.projectId;
 

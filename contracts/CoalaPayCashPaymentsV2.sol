@@ -35,6 +35,10 @@ contract LastMileCashPayments is AccessControl, ReentrancyGuard, ERC721 {
         uint256 paid;
         uint256 beneficiaries;
         uint256 feePaid;
+        uint256 orgFeePaid;
+        // Organization fee configuration (per project), paid only on completion.
+        address[] orgFeeRecipients;
+        uint16[] orgFeeBps; // per-recipient bps; sum must be <= 1000 (10%)
         bool prefunded;
         bool completed;
     }
@@ -71,7 +75,8 @@ contract LastMileCashPayments is AccessControl, ReentrancyGuard, ERC721 {
         address donor,
         uint256 beneficiaries,
         uint256 paid,
-        uint256 feePaid
+        uint256 feePaid,
+        uint256 orgFeePaid
     );
     event BaseURISet(string oldBase, string newBase);
     event ProjectPrefunded(
@@ -82,6 +87,17 @@ contract LastMileCashPayments is AccessControl, ReentrancyGuard, ERC721 {
     );
     event FeePercentUpdated(uint256 oldFee, uint256 newFee);
     event FeeToUpdated(address oldAddr, address newAddr);
+    event ProjectOrgFeeRecipientsUpdated(
+        uint256 indexed projectId,
+        address[] recipients,
+        uint16[] bps
+    );
+    event OrgFeesDistributed(
+        uint256 indexed projectId,
+        uint256 totalOrgFee,
+        address[] recipients,
+        uint256[] amounts
+    );
 
     /* ---------- Constructor ---------- */
     constructor(
@@ -120,19 +136,30 @@ contract LastMileCashPayments is AccessControl, ReentrancyGuard, ERC721 {
         return (_amount * feePercent) / 10_000;
     }
 
+    function _calcProcessingFee(uint256 _amount) internal view returns (uint256) {
+        return (_amount * feePercent) / 10_000;
+    }
+
+    function _orgFeeTotalBps(Project storage p) internal view returns (uint16 total) {
+        uint256 len = p.orgFeeBps.length;
+        for (uint256 i; i < len; ++i) {
+            total += p.orgFeeBps[i];
+        }
+    }
+
+    function _calcOrgFee(Project storage p, uint256 _amount) internal view returns (uint256) {
+        uint16 totalBps = _orgFeeTotalBps(p);
+        return (_amount * totalBps) / 10_000;
+    }
+
     /* ---------- Project lifecycle ---------- */
-    function createProject(
+    function _createProject(
         address organisation,
         IERC20 token,
         uint256 budget,
         address donor,
         string calldata projectKey
-    )
-        external
-        nonReentrant
-        onlyRole(DEFAULT_ADMIN_ROLE)
-        returns (uint256 projectId)
-    {
+    ) internal returns (uint256 projectId) {
         require(organisation != address(0), "organisation=0");
         require(budget > 0, "budget=0");
 
@@ -145,6 +172,9 @@ contract LastMileCashPayments is AccessControl, ReentrancyGuard, ERC721 {
             paid: 0,
             beneficiaries: 0,
             feePaid: 0,
+            orgFeePaid: 0,
+            orgFeeRecipients: new address[](0),
+            orgFeeBps: new uint16[](0),
             prefunded: false,
             completed: false
         });
@@ -158,6 +188,50 @@ contract LastMileCashPayments is AccessControl, ReentrancyGuard, ERC721 {
             false,
             projectKey
         );
+    }
+
+    /**
+     * @notice Create a project with per-project fee configuration.
+     * @dev orgRecipients/orgBps must be same length, sum(orgBps) <= 1000 (10%).
+     * processingFeeBps must be <= 1000 (10%).
+     */
+    function createProject(
+        address organisation,
+        IERC20 token,
+        uint256 budget,
+        address donor,
+        string calldata projectKey,
+        address[] calldata orgRecipients,
+        uint16[] calldata orgBps
+    )
+        external
+        nonReentrant
+        onlyRole(DEFAULT_ADMIN_ROLE)
+        returns (uint256 projectId)
+    {
+        projectId = _createProject(organisation, token, budget, donor, projectKey);
+        _setProjectOrgFees(projectId, orgRecipients, orgBps);
+    }
+
+    function _setProjectOrgFees(
+        uint256 projectId,
+        address[] memory recipients,
+        uint16[] memory bps
+    ) internal {
+        require(recipients.length == bps.length, "len mismatch");
+        for (uint256 i; i < recipients.length; ++i) {
+            require(recipients[i] != address(0), "recipient=0");
+        }
+        uint256 totalBps;
+        for (uint256 i; i < bps.length; ++i) {
+            totalBps += bps[i];
+        }
+        require(totalBps <= 1000, "orgFee>10%");
+        Project storage p = projects[projectId];
+        // overwrite arrays
+        p.orgFeeRecipients = recipients;
+        p.orgFeeBps = bps;
+        emit ProjectOrgFeeRecipientsUpdated(projectId, recipients, bps);
     }
 
     /**
@@ -176,13 +250,14 @@ contract LastMileCashPayments is AccessControl, ReentrancyGuard, ERC721 {
         require(p.paid == 0, "already paid");
         require(!p.prefunded, "already prefunded");
 
-        uint256 upfrontFee = getFee(p.budget);
-        uint256 total = p.budget + upfrontFee;
+        uint256 upfrontProcFee = _calcProcessingFee(p.budget);
+        uint256 upfrontOrgFee = _calcOrgFee(p, p.budget);
+        uint256 total = p.budget + upfrontProcFee + upfrontOrgFee;
 
         p.prefunded = true;
         p.token.safeTransferFrom(msg.sender, address(this), total);
 
-        emit ProjectPrefunded(projectId, msg.sender, p.budget, upfrontFee);
+        emit ProjectPrefunded(projectId, msg.sender, p.budget, upfrontProcFee + upfrontOrgFee);
     }
 
     /* ---------- Batch handling ---------- */
@@ -261,12 +336,11 @@ contract LastMileCashPayments is AccessControl, ReentrancyGuard, ERC721 {
         Project storage p = projects[projectId];
         require(!p.completed, "project done");
 
-        uint256 feeAmount = getFee(b.amount);
+        uint256 feeAmount = _calcProcessingFee(b.amount);
+        p.feePaid += feeAmount;
+        _transferPaymentToOrganisation(p, b.amount, feeAmount);
 
         b.processed = true;
-        p.feePaid += feeAmount;
-
-        _transferPayment(p, b.amount, feeAmount);
 
         emit BatchProcessed(
             projectId,
@@ -289,10 +363,14 @@ contract LastMileCashPayments is AccessControl, ReentrancyGuard, ERC721 {
         );
         p.completed = true;
 
+        // Calculate and distribute organization fees on completion (no batches)
+        _distributeOrgFees(p, projectId);
+
         if (p.prefunded) {
             uint256 principalLeft = p.budget - p.paid;
-            uint256 feeLeft = getFee(p.budget) - p.feePaid;
-            uint256 refund = principalLeft + feeLeft;
+            uint256 procFeeLeft = _calcProcessingFee(p.budget) - p.feePaid;
+            uint256 orgFeeLeft = _calcOrgFee(p, p.budget) - p.orgFeePaid;
+            uint256 refund = principalLeft + procFeeLeft + orgFeeLeft;
 
             if (refund > 0) {
                 p.token.safeTransfer(p.donor, refund);
@@ -305,24 +383,55 @@ contract LastMileCashPayments is AccessControl, ReentrancyGuard, ERC721 {
             p.donor,
             p.beneficiaries,
             p.paid,
-            p.feePaid
+            p.feePaid,
+            p.orgFeePaid
         );
     }
 
     /* ─────────── Internal helpers ─────────── */
-    function _transferPayment(
+    function _distributeOrgFees(Project storage p, uint256 projectId) internal {
+        uint256 totalOrgFee = _calcOrgFee(p, p.paid);
+        if (totalOrgFee == 0 || p.orgFeeRecipients.length == 0) {
+            p.orgFeePaid = 0;
+            return;
+        }
+        uint256[] memory distributed = new uint256[](p.orgFeeRecipients.length);
+        uint256 running;
+        for (uint256 i; i < p.orgFeeRecipients.length; ++i) {
+            uint256 amount;
+            if (i == p.orgFeeRecipients.length - 1) {
+                amount = totalOrgFee - running;
+            } else {
+                amount = (totalOrgFee * p.orgFeeBps[i]) / 10_000;
+                running += amount;
+            }
+            distributed[i] = amount;
+            if (amount == 0) continue;
+            _transferPaymentTo(p.orgFeeRecipients[i], p, amount);
+        }
+        p.orgFeePaid = totalOrgFee;
+        emit OrgFeesDistributed(projectId, totalOrgFee, p.orgFeeRecipients, distributed);
+    }
+
+    function _transferPaymentToOrganisation(
         Project storage p,
         uint256 amount,
         uint256 fee
     ) internal {
         if (p.prefunded) {
-            // tokens already held by the contract
             p.token.safeTransfer(p.organisation, amount);
             p.token.safeTransfer(feeTo, fee);
         } else {
-            // pull directly from donor
             p.token.safeTransferFrom(p.donor, p.organisation, amount);
             p.token.safeTransferFrom(p.donor, feeTo, fee);
+        }
+    }
+
+    function _transferPaymentTo(address to, Project storage p, uint256 amount) internal {
+        if (p.prefunded) {
+            p.token.safeTransfer(to, amount);
+        } else {
+            p.token.safeTransferFrom(p.donor, to, amount);
         }
     }
 
@@ -340,3 +449,4 @@ contract LastMileCashPayments is AccessControl, ReentrancyGuard, ERC721 {
         return super.supportsInterface(interfaceId);
     }
 }
+
