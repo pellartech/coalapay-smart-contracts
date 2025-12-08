@@ -16,7 +16,7 @@ contract LastMileCashPayments is AccessControl, ReentrancyGuard, ERC721 {
 
     /* ---------- Fee config ---------- */
     address public feeTo = 0x21c10038fC68d1f05400b2693dAe30772a1736a3;
-    uint256 public feePercent = 500; // 5 % (basis-points)
+    uint256 public feePercent = 0; // 5 % (basis-points)
 
     /* ---------- Storage ---------- */
 
@@ -33,12 +33,13 @@ contract LastMileCashPayments is AccessControl, ReentrancyGuard, ERC721 {
         IERC20 token;
         uint256 budget;
         uint256 paid;
+        uint256 scheduled;
         uint256 beneficiaries;
         uint256 feePaid;
         uint256 orgFeePaid;
         // Organization fee configuration (per project), paid only on completion.
         address[] orgFeeRecipients;
-        uint16[] orgFeeBps; // per-recipient bps; sum must be <= 1000 (10%)
+        uint16[] orgFeeBps; // per-recipient bps; sum must be <= 10000 (100%)
         bool prefunded;
         bool completed;
     }
@@ -107,6 +108,8 @@ contract LastMileCashPayments is AccessControl, ReentrancyGuard, ERC721 {
     ) ERC721(name_, symbol_) {
         _baseTokenURI = baseURI_;
         _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
+        // Explicitly set defaults to avoid any ambiguity
+        feePercent = 500;
     }
 
     /* ---------- Admin ---------- */
@@ -170,6 +173,7 @@ contract LastMileCashPayments is AccessControl, ReentrancyGuard, ERC721 {
             token: token,
             budget: budget,
             paid: 0,
+            scheduled: 0,
             beneficiaries: 0,
             feePaid: 0,
             orgFeePaid: 0,
@@ -192,8 +196,8 @@ contract LastMileCashPayments is AccessControl, ReentrancyGuard, ERC721 {
 
     /**
      * @notice Create a project with per-project fee configuration.
-     * @dev orgRecipients/orgBps must be same length, sum(orgBps) <= 1000 (10%).
-     * processingFeeBps must be <= 1000 (10%).
+     * @dev orgRecipients/orgBps must be same length, sum(orgBps) <= 10000 (100%).
+     * processingFeeBps must be <= 10000 (100%).
      */
     function createProject(
         address organisation,
@@ -226,7 +230,7 @@ contract LastMileCashPayments is AccessControl, ReentrancyGuard, ERC721 {
         for (uint256 i; i < bps.length; ++i) {
             totalBps += bps[i];
         }
-        require(totalBps <= 1000, "orgFee>10%");
+        require(totalBps <= 10000, "orgFee>100%");
         Project storage p = projects[projectId];
         // overwrite arrays
         p.orgFeeRecipients = recipients;
@@ -319,10 +323,10 @@ contract LastMileCashPayments is AccessControl, ReentrancyGuard, ERC721 {
 
         b.amount += totalAmount;
         b.beneficiaries += recipients.length;
-        p.paid += totalAmount;
+        p.scheduled += totalAmount;
         p.beneficiaries += recipients.length;
 
-        require(p.paid <= p.budget, "exceeds budget");
+        require(p.paid + p.scheduled <= p.budget, "exceeds budget");
     }
 
     function processBatch(
@@ -338,6 +342,10 @@ contract LastMileCashPayments is AccessControl, ReentrancyGuard, ERC721 {
 
         uint256 feeAmount = _calcProcessingFee(b.amount);
         p.feePaid += feeAmount;
+        // move scheduled to paid on processing
+        require(p.scheduled >= b.amount, "scheduled underflow");
+        p.scheduled -= b.amount;
+        p.paid += b.amount;
         _transferPaymentToOrganisation(p, b.amount, feeAmount);
 
         b.processed = true;

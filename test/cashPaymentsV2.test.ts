@@ -114,7 +114,7 @@ describe("LastMileCashPayments (v2 with fees)", () => {
     it("prevents double prefund", async () => {
       await expect(
         lmp.connect(donor).prefundProject(projectId)
-      ).to.be.revertedWith("already paid");
+      ).to.be.revertedWith("already prefunded");
     });
 
     it("processBatch moves principal to organisation & fee to feeTo", async () => {

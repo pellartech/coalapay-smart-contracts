@@ -3,6 +3,9 @@ import "@nomicfoundation/hardhat-toolbox";
 import { config } from "dotenv";
 config();
 const hardhatConfig: HardhatUserConfig = {
+  sourcify: {
+    enabled: true
+  },
   solidity: {
     version: "0.8.20",
     settings: {
