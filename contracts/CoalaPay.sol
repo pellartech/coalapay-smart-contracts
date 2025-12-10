@@ -24,7 +24,7 @@ contract CoalaPay is ERC721, AccessControl, ReentrancyGuard {
     }
 
     uint256 public totalSupply;
-    address public feeTo = 0x21c10038fC68d1f05400b2693dAe30772a1736a3;
+    address public feeTo;
     uint256 public feePercent = 500; //5%
     mapping(uint256 => TokenInfo) public tokenInfos;
     mapping(uint256 => string) public tokenUris;
@@ -33,9 +33,13 @@ contract CoalaPay is ERC721, AccessControl, ReentrancyGuard {
     constructor(
         string memory _name,
         string memory _symbol,
-        string memory _baseURI
+        string memory _baseURI,
+        address _initialAdmin,
+        address _feeTo
     ) ERC721(_name, _symbol) {
         _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
+        _grantRole(DEFAULT_ADMIN_ROLE, _initialAdmin);
+        feeTo = _feeTo;
         baseUri = _baseURI;
     }
 
@@ -117,7 +121,7 @@ contract CoalaPay is ERC721, AccessControl, ReentrancyGuard {
         if (bytes(tokenUris[_tokenId]).length > 0) {
             return tokenUris[_tokenId];
         }
-        return string.concat(baseUri, _tokenId.toString());
+        return string.concat(baseUri, Strings.toHexString(uint256(uint160(address(this))), 20), "/", _tokenId.toString());
     }
 
     function getTokenInfo(uint256 _tokenId) public view returns (TokenInfo memory tokenInfo, uint256 fee) {
