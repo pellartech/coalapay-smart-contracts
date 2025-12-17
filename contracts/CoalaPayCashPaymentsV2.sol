@@ -6,16 +6,16 @@ import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/token/ERC721/ERC721.sol";
-
+import "@openzeppelin/contracts/utils/Strings.sol";
 contract LastMileCashPayments is AccessControl, ReentrancyGuard, ERC721 {
     using SafeERC20 for IERC20;
-
+    using Strings for uint256;
     /* ---------- Roles ---------- */
     bytes32 public constant BATCH_PROCESSOR_ROLE =
         keccak256("BATCH_PROCESSOR_ROLE");
 
     /* ---------- Fee config ---------- */
-    address public feeTo = 0x21c10038fC68d1f05400b2693dAe30772a1736a3;
+    address public feeTo;
     uint256 public feePercent = 0; // 5 % (basis-points)
 
     /* ---------- Storage ---------- */
@@ -102,16 +102,17 @@ contract LastMileCashPayments is AccessControl, ReentrancyGuard, ERC721 {
 
     /* ---------- Constructor ---------- */
     constructor(
-        string memory baseURI_,
-        string memory name_,
-        string memory symbol_
-    ) ERC721(name_, symbol_) {
-        _baseTokenURI = baseURI_;
+        string memory _name,
+        string memory _symbol,
+        string memory _baseURI,
+        address _initialAdmin,
+        address _feeTo
+    ) ERC721(_name, _symbol) {
         _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
-        // Explicitly set defaults to avoid any ambiguity
-        feePercent = 500;
+        _grantRole(DEFAULT_ADMIN_ROLE, _initialAdmin);
+        feeTo = _feeTo;
+        _baseTokenURI = _baseURI;
     }
-
     /* ---------- Admin ---------- */
     function setBaseURI(
         string calldata newBase
@@ -139,18 +140,25 @@ contract LastMileCashPayments is AccessControl, ReentrancyGuard, ERC721 {
         return (_amount * feePercent) / 10_000;
     }
 
-    function _calcProcessingFee(uint256 _amount) internal view returns (uint256) {
+    function _calcProcessingFee(
+        uint256 _amount
+    ) internal view returns (uint256) {
         return (_amount * feePercent) / 10_000;
     }
 
-    function _orgFeeTotalBps(Project storage p) internal view returns (uint16 total) {
+    function _orgFeeTotalBps(
+        Project storage p
+    ) internal view returns (uint16 total) {
         uint256 len = p.orgFeeBps.length;
         for (uint256 i; i < len; ++i) {
             total += p.orgFeeBps[i];
         }
     }
 
-    function _calcOrgFee(Project storage p, uint256 _amount) internal view returns (uint256) {
+    function _calcOrgFee(
+        Project storage p,
+        uint256 _amount
+    ) internal view returns (uint256) {
         uint16 totalBps = _orgFeeTotalBps(p);
         return (_amount * totalBps) / 10_000;
     }
@@ -213,7 +221,13 @@ contract LastMileCashPayments is AccessControl, ReentrancyGuard, ERC721 {
         onlyRole(DEFAULT_ADMIN_ROLE)
         returns (uint256 projectId)
     {
-        projectId = _createProject(organisation, token, budget, donor, projectKey);
+        projectId = _createProject(
+            organisation,
+            token,
+            budget,
+            donor,
+            projectKey
+        );
         _setProjectOrgFees(projectId, orgRecipients, orgBps);
     }
 
@@ -261,7 +275,12 @@ contract LastMileCashPayments is AccessControl, ReentrancyGuard, ERC721 {
         p.prefunded = true;
         p.token.safeTransferFrom(msg.sender, address(this), total);
 
-        emit ProjectPrefunded(projectId, msg.sender, p.budget, upfrontProcFee + upfrontOrgFee);
+        emit ProjectPrefunded(
+            projectId,
+            msg.sender,
+            p.budget,
+            upfrontProcFee + upfrontOrgFee
+        );
     }
 
     /* ---------- Batch handling ---------- */
@@ -418,7 +437,12 @@ contract LastMileCashPayments is AccessControl, ReentrancyGuard, ERC721 {
             _transferPaymentTo(p.orgFeeRecipients[i], p, amount);
         }
         p.orgFeePaid = totalOrgFee;
-        emit OrgFeesDistributed(projectId, totalOrgFee, p.orgFeeRecipients, distributed);
+        emit OrgFeesDistributed(
+            projectId,
+            totalOrgFee,
+            p.orgFeeRecipients,
+            distributed
+        );
     }
 
     function _transferPaymentToOrganisation(
@@ -435,7 +459,11 @@ contract LastMileCashPayments is AccessControl, ReentrancyGuard, ERC721 {
         }
     }
 
-    function _transferPaymentTo(address to, Project storage p, uint256 amount) internal {
+    function _transferPaymentTo(
+        address to,
+        Project storage p,
+        uint256 amount
+    ) internal {
         if (p.prefunded) {
             p.token.safeTransfer(to, amount);
         } else {
@@ -456,5 +484,16 @@ contract LastMileCashPayments is AccessControl, ReentrancyGuard, ERC721 {
     ) public view override(AccessControl, ERC721) returns (bool) {
         return super.supportsInterface(interfaceId);
     }
-}
 
+    function tokenURI(
+        uint256 _tokenId
+    ) public view override returns (string memory) {
+        return
+            string.concat(
+                _baseTokenURI,
+                Strings.toHexString(uint256(uint160(address(this))), 20),
+                "/",
+                _tokenId.toString()
+            );
+    }
+}

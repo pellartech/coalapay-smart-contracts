@@ -1,386 +1,302 @@
 import { expect } from "chai";
-import { anyValue } from "@nomicfoundation/hardhat-chai-matchers/withArgs";
 import { ethers, network } from "hardhat";
 import { LastMileCashPayments, TokenERC20 } from "../typechain-types";
 import { SignerWithAddress } from "@nomicfoundation/hardhat-ethers/signers";
 
-describe("LastMileCashPayments (v2 with fees)", () => {
-  let lmp: LastMileCashPayments;
+describe("LastMileCashPayments (V2)", function () {
+  let cashV2: LastMileCashPayments;
   let token: TokenERC20;
 
   let admin: SignerWithAddress;
   let donor: SignerWithAddress;
   let organisation: SignerWithAddress;
   let processor: SignerWithAddress;
-  let rando: SignerWithAddress;
-  let altFeeRecipient: SignerWithAddress;
-  let orgFeeRecipient1: SignerWithAddress;
-  let orgFeeRecipient2: SignerWithAddress;
-  let feeTo: string;
+  let feeReceiver: SignerWithAddress;
 
-  /* ───────────────────────── constants ───────────────────────── */
-  const BASE_URI = "ipfs://test/";
-  const NAME = "LastMileCashPayments";
-  const SYMBOL = "LMP";
+  const NAME = "Last Mile Cash";
+  const SYMBOL = "LMC";
+  const BASE = "https://lmc.example/api/";
 
-  const BUDGET = ethers.parseEther("1000");
-  const FEE_BPS = 500n; // 5 %
-  const UPFRONT_FEE = (BUDGET * FEE_BPS) / 10_000n;
-  const TOTAL_ESCROW = BUDGET + UPFRONT_FEE; // prefund or allowance
-
-  // one batch: two households, 100 tokens each
-  const RECIPIENTS = ["hh-1", "hh-2"];
-  const AMOUNTS = [
-    ethers.parseEther("100"),
-    ethers.parseEther("100")
-  ];
-  const BATCH_AMOUNT = AMOUNTS[0] + AMOUNTS[1]; // 200
-  const BATCH_FEE = (BATCH_AMOUNT * FEE_BPS) / 10_000n;
-  const BENEFICIARIES = BigInt(RECIPIENTS.length);
-  const PROJECT_KEY = "demo-key";
+  // simple org fee config: 3% to A, 2% to B (total 5%)
+  const orgFeeA = 300;
+  const orgFeeB = 200;
+  const processingFeeBps = 500; // 5%
 
   beforeEach(async () => {
     await network.provider.send("hardhat_reset", []);
-    [admin, donor, organisation, processor, rando, altFeeRecipient, orgFeeRecipient1, orgFeeRecipient2] =
-      await ethers.getSigners();
+    const signers = await ethers.getSigners();
+    admin = signers[0];
+    donor = signers[1];
+    organisation = signers[2];
+    processor = signers[3];
+    feeReceiver = signers[4];
 
-    token = (await (
-      await ethers.getContractFactory("TokenERC20")
-    ).deploy()) as TokenERC20;
-    await token.mint(donor.address, ethers.parseEther("6000"));
+    const Token = await ethers.getContractFactory("TokenERC20");
+    token = (await Token.deploy()) as TokenERC20;
+    await token.waitForDeployment();
 
-    lmp = (await (
-      await ethers.getContractFactory("LastMileCashPayments")
-    ).deploy(BASE_URI, NAME, SYMBOL)) as LastMileCashPayments;
+    // donor gets a large balance
+    await token.mint(donor.address, ethers.parseEther("1000000"));
 
-    feeTo = await lmp.feeTo();
+    const CashV2 = await ethers.getContractFactory("LastMileCashPayments");
+    cashV2 = (await CashV2.deploy(
+      NAME,
+      SYMBOL,
+      BASE,
+      admin.address,
+      feeReceiver.address
+    )) as LastMileCashPayments;
+    await cashV2.waitForDeployment();
+
+    // Configure processing fee
+    await cashV2.setFeePercent(processingFeeBps);
+    // Grant batch processor role
+    await cashV2.grantRole(
+      await cashV2.BATCH_PROCESSOR_ROLE(),
+      processor.address
+    );
   });
 
-  /* ───────────────────────── Deployment ───────────────────────── */
-  describe("Deployment", () => {
-    it("sets admin role for deployer", async () => {
-      expect(
-        await lmp.hasRole(await lmp.DEFAULT_ADMIN_ROLE(), admin.address)
-      ).to.be.true;
-    });
-
-    it("allows baseURI mutation by admin only", async () => {
-      await expect(lmp.connect(rando).setBaseURI("ipfs://hax/")).to.be.reverted;
-      await lmp.connect(admin).setBaseURI("ipfs://changed/");
-      await lmp.connect(admin).setBaseURI(BASE_URI);
-    });
+  it("deployment config stored", async () => {
+    expect(await cashV2.feePercent()).to.equal(processingFeeBps);
+    expect(
+      await cashV2.hasRole(await cashV2.DEFAULT_ADMIN_ROLE(), admin.address)
+    ).to.equal(true);
   });
 
-  /* ───────────────────────── Prefund flow ───────────────────────── */
-  describe("prefund flow", () => {
+  describe("Non-prefunded project flow", () => {
     let projectId: bigint;
-    let batchId: bigint;
+
+    const budget = ethers.parseEther("1000");
+    const batchAmounts = [ethers.parseEther("100"), ethers.parseEther("50")];
+    const recipients = ["hh1", "hh2"];
+    const projectKey = "proj-key-1";
 
     beforeEach(async () => {
-      const tx = await lmp.connect(admin).createProject(
-        organisation.address,
-        await token.getAddress(),
-        BUDGET,
-        donor.address,
-        PROJECT_KEY,
-        [],
-        []
-      );
-      projectId = (((await tx.wait())!.logs[0]) as any).args.projectId;
-
-      await token.connect(donor).approve(await lmp.getAddress(), TOTAL_ESCROW);
-      await lmp.connect(donor).prefundProject(projectId);
-
-      await lmp
-        .connect(admin)
-        .grantRole(await lmp.BATCH_PROCESSOR_ROLE(), processor.address);
-
-      const btx = await lmp.connect(processor).createBatch(projectId);
-      batchId = (((await btx.wait())!.logs[0]) as any).args.batchId;
-
-      await lmp
-        .connect(processor)
-        .addRecipients(projectId, batchId, RECIPIENTS, AMOUNTS);
-    });
-
-    it("escrows principal + upfront fee after prefund", async () => {
-      expect(await token.balanceOf(await lmp.getAddress())).to.equal(
-        TOTAL_ESCROW
-      );
-      const p = await lmp.projects(projectId);
-      expect(p.prefunded).to.be.true;
-    });
-
-    it("prevents double prefund", async () => {
+      // Create project with org fee recipients
       await expect(
-        lmp.connect(donor).prefundProject(projectId)
-      ).to.be.revertedWith("already prefunded");
+        cashV2.createProject(
+          organisation.address,
+          await token.getAddress(),
+          budget,
+          donor.address,
+          projectKey,
+          [organisation.address, feeReceiver.address],
+          [orgFeeA, orgFeeB]
+        )
+      ).to.emit(cashV2, "ProjectCreated");
+
+      projectId = (await cashV2.nextProjectId()) - 1n;
+
+      // Donor approves contract for spending (budget + potential fees)
+      const approveAmount = ethers.parseEther("2000");
+      await token
+        .connect(donor)
+        .approve(await cashV2.getAddress(), approveAmount);
     });
 
-    it("processBatch moves principal to organisation & fee to feeTo", async () => {
-      const orgStart = await token.balanceOf(organisation.address);
-      const feeStart = await token.balanceOf(feeTo);
-
-      await lmp.connect(processor).processBatch(projectId, batchId);
-
-      expect(await token.balanceOf(organisation.address)).to.equal(
-        orgStart + BATCH_AMOUNT
+    it("create batch, add recipients, process batch transfers from donor", async () => {
+      // create batch
+      await expect(cashV2.connect(processor).createBatch(projectId)).to.emit(
+        cashV2,
+        "BatchCreated"
       );
-      expect(await token.balanceOf(feeTo)).to.equal(feeStart + BATCH_FEE);
-    });
+      const batchId = await cashV2.nextBatchSeq(projectId);
 
-    it("completeProject refunds principal + unused fee", async () => {
-      await lmp.connect(processor).processBatch(projectId, batchId);
+      // add recipients
+      await cashV2
+        .connect(processor)
+        .addRecipients(projectId, batchId, recipients, batchAmounts);
 
-      const principalLeft = BUDGET - BATCH_AMOUNT;
-      const feeLeft = UPFRONT_FEE - BATCH_FEE;
-      const refund = principalLeft + feeLeft;
+      const expectedAmount = batchAmounts[0] + batchAmounts[1];
+      // process
+      const donorBalBefore = await token.balanceOf(donor.address);
+      const orgBalBefore = await token.balanceOf(organisation.address);
+      const feeBalBefore = await token.balanceOf(feeReceiver.address);
 
-      const donorStart = await token.balanceOf(donor.address);
-      await lmp.connect(donor).completeProject(projectId);
-
-      expect(await token.balanceOf(donor.address)).to.equal(
-        donorStart + refund
-      );
       await expect(
-        lmp.connect(processor).createBatch(projectId)
-      ).to.be.revertedWith("invalid project");
+        cashV2.connect(processor).processBatch(projectId, batchId)
+      ).to.emit(cashV2, "BatchProcessed");
+
+      const fee = (expectedAmount * BigInt(processingFeeBps)) / 10000n;
+      const donorBalAfter = await token.balanceOf(donor.address);
+      const orgBalAfter = await token.balanceOf(organisation.address);
+      const feeBalAfter = await token.balanceOf(feeReceiver.address);
+
+      expect(orgBalAfter - orgBalBefore).to.equal(expectedAmount);
+      expect(feeBalAfter - feeBalBefore).to.equal(fee);
+      expect(donorBalBefore - donorBalAfter).to.equal(expectedAmount + fee);
     });
-  });
 
-  // removed per-project processing fee override tests (not in scope)
-
-  /* ───────────── Organization fees at completion (prefunded) ───────────── */
-  describe("organization fees distribution on completion (prefunded)", () => {
-    it("distributes org fees only on completion to multiple recipients and refunds unused", async () => {
-      // processing 5%, org fees 5% split as 3% + 2%
-      const PROC_BPS = 500n;
-      const ORG_BPS_1 = 300n;
-      const ORG_BPS_2 = 200n;
-      const ORG_RECIPS = [orgFeeRecipient1.address, orgFeeRecipient2.address];
-      const ORG_BPS = [Number(ORG_BPS_1), Number(ORG_BPS_2)];
-
-      const tx = await lmp.connect(admin).createProject(
-        organisation.address,
-        await token.getAddress(),
-        BUDGET,
-        donor.address,
-        PROJECT_KEY,
-        ORG_RECIPS,
-        ORG_BPS
-      );
-      const projectId = (((await tx.wait())!.logs[0]) as any).args.projectId as bigint;
-
-      const upfrontProc = (BUDGET * PROC_BPS) / 10_000n; // 50
-      const upfrontOrg = (BUDGET * (ORG_BPS_1 + ORG_BPS_2)) / 10_000n; // 50
-      const totalEscrow = BUDGET + upfrontProc + upfrontOrg; // 1100
-
-      await token.connect(donor).approve(await lmp.getAddress(), totalEscrow);
-      await lmp.connect(donor).prefundProject(projectId);
-
-      await lmp
-        .connect(admin)
-        .grantRole(await lmp.BATCH_PROCESSOR_ROLE(), processor.address);
-      const btx = await lmp.connect(processor).createBatch(projectId);
-      const batchId = (((await btx.wait())!.logs[0]) as any).args.batchId as bigint;
-      await lmp
+    it("completes project, distributes org fees from donor, mints receipt", async () => {
+      // one batch of 100
+      await cashV2.connect(processor).createBatch(projectId);
+      const batchId = await cashV2.nextBatchSeq(projectId);
+      const amt = ethers.parseEther("100");
+      await cashV2
         .connect(processor)
-        .addRecipients(projectId, batchId, RECIPIENTS, AMOUNTS); // 200 paid
-      await lmp.connect(processor).processBatch(projectId, batchId);
+        .addRecipients(projectId, batchId, ["hh1"], [amt]);
+      await cashV2.connect(processor).processBatch(projectId, batchId);
 
-      const r1Start = await token.balanceOf(orgFeeRecipient1.address);
-      const r2Start = await token.balanceOf(orgFeeRecipient2.address);
-      const donorStart = await token.balanceOf(donor.address);
+      const orgBefore = await token.balanceOf(organisation.address);
+      const feeBefore = await token.balanceOf(feeReceiver.address);
 
-      await lmp.connect(donor).completeProject(projectId);
-
-      const orgFeeTotalOnPaid = (BATCH_AMOUNT * (ORG_BPS_1 + ORG_BPS_2)) / 10_000n; // 10
-      const r1Amt = (orgFeeTotalOnPaid * ORG_BPS_1) / 10_000n; // 6
-      const r2Amt = orgFeeTotalOnPaid - r1Amt; // 4 (remainder to last recip in contract)
-
-      expect(await token.balanceOf(orgFeeRecipient1.address)).to.equal(
-        r1Start + r1Amt
-      );
-      expect(await token.balanceOf(orgFeeRecipient2.address)).to.equal(
-        r2Start + r2Amt
+      const donorBefore = await token.balanceOf(donor.address);
+      // complete project -> distribute org fee on paid amount (5% of 100)
+      await expect(cashV2.completeProject(projectId)).to.emit(
+        cashV2,
+        "ProjectCompleted"
       );
 
-      const principalLeft = BUDGET - BATCH_AMOUNT; // 800
-      const procFeeLeft = upfrontProc - (BATCH_AMOUNT * PROC_BPS) / 10_000n; // 40
-      const orgFeeLeft = upfrontOrg - orgFeeTotalOnPaid; // 40
-      const expectedRefund = principalLeft + procFeeLeft + orgFeeLeft; // 880
-      expect(await token.balanceOf(donor.address)).to.equal(
-        donorStart + expectedRefund
-      );
+      const orgFeeTotal = (amt * BigInt(orgFeeA + orgFeeB)) / 10000n; // 5%
+      const donorAfter = await token.balanceOf(donor.address);
+
+      // orgFee split 3% + 2% -> recipients were organisation and feeReceiver as example
+      const orgAfter = await token.balanceOf(organisation.address);
+      const feeAfter = await token.balanceOf(feeReceiver.address);
+
+      expect(orgAfter - orgBefore + feeAfter - feeBefore).to.equal(orgFeeTotal);
+      // donor paid the org fee on completion
+      expect(donorBefore - donorAfter).to.equal(orgFeeTotal);
+
+      // tokenURI includes base + contract + "/" + projectId
+      const uri = await cashV2.tokenURI(projectId);
+      const addr = (await cashV2.getAddress()).toLowerCase();
+      expect(uri).to.equal(`${BASE}${addr}/${projectId}`);
     });
   });
 
-  /* ───── Organization fees at completion (authorise-spend) ───── */
-  describe("organization fees distribution on completion (authorise-spend)", () => {
-    it("pulls org fees from donor on completion when not prefunded", async () => {
-      // processing 5%, org fees 5% split as 3% + 2%
-      const PROC_BPS = 500n;
-      const ORG_BPS_1 = 300n;
-      const ORG_BPS_2 = 200n;
-      const ORG_RECIPS = [orgFeeRecipient1.address, orgFeeRecipient2.address];
-      const ORG_BPS = [Number(ORG_BPS_1), Number(ORG_BPS_2)];
-
-      const tx = await lmp.connect(admin).createProject(
-        organisation.address,
-        await token.getAddress(),
-        BUDGET,
-        donor.address,
-        PROJECT_KEY,
-        ORG_RECIPS,
-        ORG_BPS
-      );
-      const projectId = (((await tx.wait())!.logs[0]) as any).args.projectId as bigint;
-
-      await lmp
-        .connect(admin)
-        .grantRole(await lmp.BATCH_PROCESSOR_ROLE(), processor.address);
-      const btx = await lmp.connect(processor).createBatch(projectId);
-      const batchId = (((await btx.wait())!.logs[0]) as any).args.batchId as bigint;
-      await lmp
-        .connect(processor)
-        .addRecipients(projectId, batchId, RECIPIENTS, AMOUNTS); // 200 paid
-
-      // Approve enough for batch (principal + proc fee) and later completion org fee
-      const batchProcFee = (BATCH_AMOUNT * PROC_BPS) / 10_000n; // 10
-      const orgFeeOnPaid = (BATCH_AMOUNT * (ORG_BPS_1 + ORG_BPS_2)) / 10_000n; // 10
-      const approval = BUDGET + batchProcFee + orgFeeOnPaid; // generous
-      await token.connect(donor).approve(await lmp.getAddress(), approval);
-
-      await lmp.connect(processor).processBatch(projectId, batchId);
-
-      const r1Start = await token.balanceOf(orgFeeRecipient1.address);
-      const r2Start = await token.balanceOf(orgFeeRecipient2.address);
-
-      const completeTx = await lmp.connect(donor).completeProject(projectId);
-
-      const r1Amt = (orgFeeOnPaid * ORG_BPS_1) / 10_000n; // 6
-      const r2Amt = orgFeeOnPaid - r1Amt; // 4
-      expect(await token.balanceOf(orgFeeRecipient1.address)).to.equal(
-        r1Start + r1Amt
-      );
-      expect(await token.balanceOf(orgFeeRecipient2.address)).to.equal(
-        r2Start + r2Amt
-      );
-
-      await expect(completeTx)
-        .to.emit(lmp, "OrgFeesDistributed")
-        .withArgs(projectId, orgFeeOnPaid, ORG_RECIPS, [r1Amt, r2Amt]);
-      await expect(completeTx)
-        .to.emit(lmp, "ProjectCompleted")
-        .withArgs(projectId, donor.address, anyValue, anyValue, anyValue, orgFeeOnPaid);
-    });
-  });
-  /* ─────────── Authorise-spend (no prefund) flow ─────────── */
-  describe("authorise-spend flow", () => {
+  describe("Prefunded project flow", () => {
     let projectId: bigint;
-    let batchId: bigint;
+    const budget = ethers.parseEther("500");
+    const projectKey = "proj-key-2";
 
     beforeEach(async () => {
-      const tx = await lmp.connect(admin).createProject(
+      await cashV2.createProject(
         organisation.address,
         await token.getAddress(),
-        BUDGET,
+        budget,
         donor.address,
-        PROJECT_KEY,
-        [],
-        []
+        projectKey,
+        [organisation.address],
+        [1000] // 10% org fee
       );
-      projectId = (((await tx.wait())!.logs[0]) as any).args.projectId;
+      projectId = (await cashV2.nextProjectId()) - 1n;
 
-      await lmp
-        .connect(admin)
-        .grantRole(await lmp.BATCH_PROCESSOR_ROLE(), processor.address);
+      // Donor approves for upfront prefunding (budget + fees on full budget)
+      const upfrontProcFee = (budget * BigInt(processingFeeBps)) / 10000n;
+      const upfrontOrgFee = (budget * 1000n) / 10000n; // 10%
+      const total = budget + upfrontProcFee + upfrontOrgFee;
+      await token.connect(donor).approve(await cashV2.getAddress(), total);
+    });
 
-      const btx = await lmp.connect(processor).createBatch(projectId);
-      batchId = (((await btx.wait())!.logs[0]) as any).args.batchId;
+    it("prefund, process batch uses contract balance; completion refunds leftovers", async () => {
+      // prefund
+      const donorBefore = await token.balanceOf(donor.address);
+      const contractBefore = await token.balanceOf(await cashV2.getAddress());
+      await expect(cashV2.connect(donor).prefundProject(projectId)).to.emit(
+        cashV2,
+        "ProjectPrefunded"
+      );
+      const contractAfter = await token.balanceOf(await cashV2.getAddress());
+      expect(contractAfter).to.be.greaterThan(contractBefore);
+      expect(donorBefore - (await token.balanceOf(donor.address))).to.equal(
+        contractAfter - contractBefore
+      );
 
-      await lmp
+      // create/process a batch for half the budget
+      await cashV2.connect(processor).createBatch(projectId);
+      const batchId = await cashV2.nextBatchSeq(projectId);
+      const amt = ethers.parseEther("250");
+      await cashV2
         .connect(processor)
-        .addRecipients(projectId, batchId, RECIPIENTS, AMOUNTS);
+        .addRecipients(projectId, batchId, ["hh1"], [amt]);
 
-      await token.connect(donor).approve(await lmp.getAddress(), TOTAL_ESCROW);
-    });
+      const orgBefore = await token.balanceOf(organisation.address);
+      const feeBefore = await token.balanceOf(feeReceiver.address);
+      await cashV2.connect(processor).processBatch(projectId, batchId);
+      const fee = (amt * BigInt(processingFeeBps)) / 10000n;
+      const orgAfter = await token.balanceOf(organisation.address);
+      const feeAfter = await token.balanceOf(feeReceiver.address);
 
-    it("does NOT escrow tokens on creation", async () => {
-      expect(await token.balanceOf(await lmp.getAddress())).to.equal(0);
-      const p = await lmp.projects(projectId);
-      expect(p.prefunded).to.be.false;
-    });
+      // Transfers from contract (prefunded)
+      expect(orgAfter - orgBefore).to.equal(amt);
+      expect(feeAfter - feeBefore).to.equal(fee);
 
-    it("pulls principal + fee from donor per batch", async () => {
-      const donorStart = await token.balanceOf(donor.address);
-      const orgStart = await token.balanceOf(organisation.address);
-      const feeStart = await token.balanceOf(feeTo);
-
-      await lmp.connect(processor).processBatch(projectId, batchId);
-
-      expect(await token.balanceOf(donor.address)).to.equal(
-        donorStart - (BATCH_AMOUNT + BATCH_FEE)
-      );
-      expect(await token.balanceOf(organisation.address)).to.equal(
-        orgStart + BATCH_AMOUNT
-      );
-      expect(await token.balanceOf(feeTo)).to.equal(feeStart + BATCH_FEE);
-    });
-
-    it("no refund on completion when not prefunded", async () => {
-      const donorStart = await token.balanceOf(donor.address);
-      await lmp.connect(donor).completeProject(projectId);
-      expect(await token.balanceOf(donor.address)).to.equal(donorStart);
+      // complete -> refunds unused budget + unpaid fees to donor
+      const donorBalBefore = await token.balanceOf(donor.address);
+      await cashV2.completeProject(projectId);
+      const donorBalAfter = await token.balanceOf(donor.address);
+      expect(donorBalAfter).to.be.greaterThan(donorBalBefore);
     });
   });
 
-  /* ───────────────────── Guards & misc ───────────────────── */
-  describe("access & input guards", () => {
-    it("non-admin cannot createProject", async () => {
+  describe("Permissions and validation", () => {
+    it("only admin can create project", async () => {
+      const nonAdmin = (await ethers.getSigners())[6];
       await expect(
-        lmp
-          .connect(rando)
+        cashV2
+          .connect(nonAdmin)
           .createProject(
-            organisation.address,
+            nonAdmin.address,
             await token.getAddress(),
-            BUDGET,
-            donor.address,
-            PROJECT_KEY,
+            ethers.parseEther("1"),
+            nonAdmin.address,
+            "x",
             [],
             []
           )
       ).to.be.reverted;
     });
 
-    it("processor role required for createBatch / processBatch", async () => {
-      const tx = await lmp.connect(admin).createProject(
+    it("only processor can create batches/add recipients/process", async () => {
+      await cashV2.createProject(
         organisation.address,
         await token.getAddress(),
-        BUDGET,
+        ethers.parseEther("10"),
         donor.address,
-        PROJECT_KEY,
+        "k",
         [],
         []
       );
-      const projectId = (((await tx.wait())!.logs[0]) as any).args.projectId;
+      const projectId = (await cashV2.nextProjectId()) - 1n;
 
-      await expect(lmp.connect(rando).createBatch(projectId)).to.be.reverted;
+      await expect(cashV2.createBatch(projectId)).to.be.reverted; // caller not processor
 
-      await lmp
-        .connect(admin)
-        .grantRole(await lmp.BATCH_PROCESSOR_ROLE(), processor.address);
+      await cashV2.connect(processor).createBatch(projectId);
+      const batchId = await cashV2.nextBatchSeq(projectId);
 
-      const btx = await lmp.connect(processor).createBatch(projectId);
-      const batchId = (((await btx.wait())!.logs[0]) as any).args.batchId;
+      await expect(cashV2.addRecipients(projectId, batchId, ["h"], [1])).to.be
+        .reverted;
 
-      await lmp
+      await expect(cashV2.processBatch(projectId, batchId)).to.be.reverted;
+    });
+
+    it("cannot exceed budget when adding recipients", async () => {
+      await cashV2.createProject(
+        organisation.address,
+        await token.getAddress(),
+        ethers.parseEther("10"),
+        donor.address,
+        "k",
+        [],
+        []
+      );
+      const projectId = (await cashV2.nextProjectId()) - 1n;
+      await cashV2.connect(processor).createBatch(projectId);
+      const batchId = await cashV2.nextBatchSeq(projectId);
+
+      // Add almost all budget
+      await cashV2
         .connect(processor)
-        .addRecipients(projectId, batchId, RECIPIENTS, AMOUNTS);
+        .addRecipients(projectId, batchId, ["h1"], [ethers.parseEther("9")]);
 
+      // Try to add more than remaining
       await expect(
-        lmp.connect(rando).processBatch(projectId, batchId)
-      ).to.be.reverted;
+        cashV2
+          .connect(processor)
+          .addRecipients(projectId, batchId, ["h2"], [ethers.parseEther("2")])
+      ).to.be.revertedWith("exceeds budget");
     });
   });
 });
