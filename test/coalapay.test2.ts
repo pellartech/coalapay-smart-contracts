@@ -38,7 +38,9 @@ describe("CoalapayV2 Token", function () {
     coalaPayContract = await coalaPayImpl.deploy(
       NAME,
       SYMBOL,
-      INITIAL_TOKEN_URI
+      INITIAL_TOKEN_URI,
+      owner.address,
+      FEE_RECEIVER
     );
 
     const mockTokenImpl = await ethers.getContractFactory("TokenERC20");
@@ -290,11 +292,10 @@ describe("CoalapayV2 Token", function () {
 
       const coalaPayAsOwner = await coalaPayContract.connect(owner);
       await expect(coalaPayAsOwner.refund(0)).to.not.be.reverted;
-      await expect(
-        coalaPayAsBuyer.payMilestone(0, 1)
-      ).to.be.revertedWith("Token is refunded");
+      await expect(coalaPayAsBuyer.payMilestone(0, 1)).to.be.revertedWith(
+        "Token is refunded"
+      );
     });
-
   });
 
   describe("ERC20 minting with authorised payment", function () {
@@ -373,16 +374,14 @@ describe("CoalapayV2 Token", function () {
       const beforeContractBalance = await mockToken.balanceOf(
         await coalaPayContract.getAddress()
       );
-      const beforeReceiverBalance = await mockToken.balanceOf(
-        RECEIVER_ADDRESS
-      );
+      const beforeReceiverBalance = await mockToken.balanceOf(RECEIVER_ADDRESS);
       const beforeFeeReceiverBalance = await mockToken.balanceOf(FEE_RECEIVER);
 
       const coalaPayAsOwner = await coalaPayContract.connect(owner);
       await expect(coalaPayAsOwner.refund(0)).to.not.be.reverted;
-      await expect(
-        coalaPayAsBuyer.payMilestone(0, 1)
-      ).to.be.revertedWith("Token is refunded");
+      await expect(coalaPayAsBuyer.payMilestone(0, 1)).to.be.revertedWith(
+        "Token is refunded"
+      );
 
       // donor and recipient balances should not change
 
@@ -434,7 +433,8 @@ describe("CoalapayV2 Token", function () {
     it("Set base uri works", async function () {
       await expect(coalaPayContract.setBaseUri(TOKEN_URI)).to.not.be.reverted;
       const tokenUri = await coalaPayContract.tokenURI(0);
-      expect(tokenUri).to.equal(`${TOKEN_URI}0`);
+      const address = (await coalaPayContract.getAddress()).toLowerCase();
+      expect(tokenUri).to.equal(`${TOKEN_URI}${address}/0`);
     });
 
     it("Update token uri works", async function () {
