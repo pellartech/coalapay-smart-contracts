@@ -15,6 +15,9 @@ const hardhatConfig: HardhatUserConfig = {
       },
     },
   },
+  sourcify: {
+    enabled: true
+  },
   networks: {
     sepolia: {
       url: process.env.SEPOLIA_PROVIDER_URL,

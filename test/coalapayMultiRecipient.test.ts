@@ -1,6 +1,6 @@
 import { expect } from "chai";
 import { ethers, network } from "hardhat";
-import { CoalaPay, TokenERC20 } from "../typechain-types";
+import { CoalaPayMultiRecipient, TokenERC20 } from "../typechain-types";
 import { SignerWithAddress } from "@nomicfoundation/hardhat-ethers/signers";
 import { token } from "../typechain-types/@openzeppelin/contracts";
 const { parseEther } = ethers;
@@ -16,7 +16,7 @@ const TOKEN_URI = "https://tokenuri.com/";
 const PROJECT_ID = "abc123";
 
 describe("Coala Pay Token", function () {
-  let coalaPayContract: CoalaPay,
+  let coalaPayContract: CoalaPayMultiRecipient,
     owner: SignerWithAddress,
     buyer: SignerWithAddress,
     buyer_2: SignerWithAddress,
@@ -30,13 +30,11 @@ describe("Coala Pay Token", function () {
     buyer = accounts[1];
     buyer_2 = accounts[2];
 
-    const coalaPayImpl = await ethers.getContractFactory("CoalaPay");
+    const coalaPayImpl = await ethers.getContractFactory("CoalaPayMultiRecipient");
     coalaPayContract = await coalaPayImpl.deploy(
       NAME,
       SYMBOL,
-      INITIAL_TOKEN_URI,
-      owner.address,
-      FEE_RECEIVER
+      INITIAL_TOKEN_URI
     );
 
     const mockTokenImpl = await ethers.getContractFactory("TokenERC20");
@@ -62,9 +60,14 @@ describe("Coala Pay Token", function () {
   describe("Token Creation", function () {
     beforeEach(async () => {
       let contractArgs = {
-        receiver: RECEIVER_ADDRESS,
-        price: SALE_AMOUNT,
         paymentToken: ethers.ZeroAddress,
+        price: SALE_AMOUNT,
+        recipients: [
+          {
+            receiver: RECEIVER_ADDRESS,
+            amount: SALE_AMOUNT,
+          },
+        ],
       };
       await coalaPayContract.addToken(contractArgs, PROJECT_ID);
     });
@@ -152,9 +155,14 @@ describe("Coala Pay Token", function () {
   describe("ERC20 minting", function () {
     beforeEach(async () => {
       let contractArgs = {
-        receiver: RECEIVER_ADDRESS,
-        price: SALE_AMOUNT,
         paymentToken: await mockToken.getAddress(),
+        price: SALE_AMOUNT,
+        recipients: [
+          {
+            receiver: RECEIVER_ADDRESS,
+            amount: SALE_AMOUNT,
+          },
+        ],
       };
       await coalaPayContract.addToken(contractArgs, PROJECT_ID);
     });
@@ -169,48 +177,6 @@ describe("Coala Pay Token", function () {
       const feeBalance = await mockToken.balanceOf(FEE_RECEIVER);
       expect(feeBalance).to.equal(FEE_AMOUNT);
     });
-
-    it("Executor can mint on behalf of donor with ERC20", async function () {
-      const executor = accounts[3];
-      const EXECUTOR_ROLE = ethers.id("EXECUTOR_ROLE");
-
-      // grant executor role
-      await expect(coalaPayContract.grantRole(EXECUTOR_ROLE, executor.address))
-        .to.not.be.reverted;
-
-      const coalaPayAsExecutor = await coalaPayContract.connect(executor);
-
-      // executor mints to donor using donor's allowance
-      await expect(
-        (coalaPayAsExecutor as any).executorMint(
-          buyer.address,
-          buyer.address,
-          0
-        )
-      ).to.not.be.reverted;
-
-      const receiverBalance = await mockToken.balanceOf(RECEIVER_ADDRESS);
-      expect(receiverBalance).to.equal(SALE_AMOUNT);
-
-      const feeBalance = await mockToken.balanceOf(FEE_RECEIVER);
-      expect(feeBalance).to.equal(FEE_AMOUNT);
-
-      const tokenOwner = await coalaPayContract.ownerOf(0);
-      expect(tokenOwner).to.equal(buyer.address);
-    });
-
-    it("Non-executor cannot call executorMint", async function () {
-      const nonExecutor = accounts[4];
-      const coalaPayAsNonExecutor = await coalaPayContract.connect(nonExecutor);
-
-      await expect(
-        (coalaPayAsNonExecutor as any).executorMint(
-          buyer.address,
-          buyer.address,
-          0
-        )
-      ).to.be.reverted;
-    });
   });
 
   describe("Metadata Updates", function () {
@@ -221,9 +187,14 @@ describe("Coala Pay Token", function () {
 
     beforeEach(async () => {
       let contractArgs = {
-        receiver: RECEIVER_ADDRESS,
-        price: SALE_AMOUNT,
         paymentToken: await mockToken.getAddress(),
+        price: SALE_AMOUNT,
+        recipients: [
+          {
+            receiver: RECEIVER_ADDRESS,
+            amount: SALE_AMOUNT,
+          },
+        ],
       };
       await coalaPayContract.addToken(contractArgs, PROJECT_ID);
     });
@@ -231,8 +202,7 @@ describe("Coala Pay Token", function () {
     it("Set base uri works", async function () {
       await expect(coalaPayContract.setBaseUri(TOKEN_URI)).to.not.be.reverted;
       const tokenUri = await coalaPayContract.tokenURI(0);
-      const address = (await coalaPayContract.getAddress()).toLowerCase();
-      expect(tokenUri).to.equal(`${TOKEN_URI}${address}/0`);
+      expect(tokenUri).to.equal(`${TOKEN_URI}0`);
     });
 
     it("Update token uri works", async function () {
@@ -245,9 +215,14 @@ describe("Coala Pay Token", function () {
 
     it("Cannot update unminted token", async function () {
       const updatedArgs = {
-        receiver: updatedPaymentReceiver,
-        price: updatedPrice,
         paymentToken: updatedPaymentToken,
+        price: updatedPrice,
+        recipients: [
+          {
+            receiver: updatedPaymentReceiver,
+            amount: updatedPrice,
+          },
+        ],
       };
       await expect(
         coalaPayContract.updateToken(1, updatedArgs)
@@ -256,19 +231,180 @@ describe("Coala Pay Token", function () {
 
     it("Update all info works", async function () {
       const updatedArgs = {
-        receiver: updatedPaymentReceiver,
-        price: updatedPrice,
         paymentToken: updatedPaymentToken,
+        price: updatedPrice,
+        recipients: [
+          {
+            receiver: updatedPaymentReceiver,
+            amount: updatedPrice,
+          },
+        ],
       };
 
       await expect(coalaPayContract.updateToken(0, updatedArgs)).to.not.be
         .reverted;
 
       const updatedResponse = await coalaPayContract.getTokenInfo(0);
-      expect(updatedResponse).to.deep.equal([
-        [updatedPaymentReceiver, updatedPaymentToken, updatedPrice],
-        updatedFee,
-      ]);
+      expect(updatedResponse.tokenInfo.price).to.equal(updatedPrice);
+      expect(updatedResponse.tokenInfo.paymentToken).to.equal(
+        updatedPaymentToken
+      );
+      expect(updatedResponse.tokenInfo.recipients[0].receiver).to.equal(
+        updatedPaymentReceiver
+      );
+      expect(updatedResponse.tokenInfo.recipients[0].amount).to.equal(
+        updatedPrice
+      );
+      expect(updatedResponse.fee).to.equal(updatedFee);
+    });
+  });
+
+  describe("Multiple Recipients", function () {
+    const RECEIVER_1 = "0xF8D7903Ea747943Ed32Dc5b25e2Cc51Cc17F5106";
+    const RECEIVER_2 = "0xD24e0f48bA59A2627d141228bE7d595055B3BA09";
+    const AMOUNT_1 = parseEther("0.06");
+    const AMOUNT_2 = parseEther("0.04");
+    const TOTAL_AMOUNT = AMOUNT_1 + AMOUNT_2;
+    const TOTAL_FEE = (TOTAL_AMOUNT * BigInt(5)) / BigInt(100);
+
+    beforeEach(async () => {
+      let contractArgs = {
+        paymentToken: ethers.ZeroAddress,
+        price: TOTAL_AMOUNT,
+        recipients: [
+          {
+            receiver: RECEIVER_1,
+            amount: AMOUNT_1,
+          },
+          {
+            receiver: RECEIVER_2,
+            amount: AMOUNT_2,
+          },
+        ],
+      };
+      await coalaPayContract.addToken(contractArgs, PROJECT_ID);
+    });
+
+    it("Distributes funds to multiple recipients", async function () {
+      const { tokenInfo, fee } = await coalaPayContract.getTokenInfo(0);
+      const coalaPayAsBuyer = await coalaPayContract.connect(buyer);
+
+      const initialBalance1 = await ethers.provider.getBalance(RECEIVER_1);
+      const initialBalance2 = await ethers.provider.getBalance(RECEIVER_2);
+
+      await coalaPayAsBuyer.mint(buyer.address, 0, {
+        value: tokenInfo.price + fee,
+      });
+
+      const finalBalance1 = await ethers.provider.getBalance(RECEIVER_1);
+      const finalBalance2 = await ethers.provider.getBalance(RECEIVER_2);
+
+      expect(finalBalance1 - initialBalance1).to.equal(AMOUNT_1);
+      expect(finalBalance2 - initialBalance2).to.equal(AMOUNT_2);
+    });
+
+    it("Validates price equals sum of recipient amounts", async function () {
+      const invalidArgs = {
+        paymentToken: ethers.ZeroAddress,
+        price: parseEther("0.15"), // Different from sum of recipients (0.06 + 0.04 = 0.1)
+        recipients: [
+          {
+            receiver: RECEIVER_1,
+            amount: AMOUNT_1,
+          },
+          {
+            receiver: RECEIVER_2,
+            amount: AMOUNT_2,
+          },
+        ],
+      };
+
+      await expect(
+        coalaPayContract.addToken(invalidArgs, PROJECT_ID)
+      ).to.be.revertedWith("Invalid price");
+    });
+  });
+
+  describe("Token Validation", function () {
+    it("Fails with empty recipients array", async function () {
+      const invalidArgs = {
+        paymentToken: ethers.ZeroAddress,
+        price: parseEther("0.1"),
+        recipients: [],
+      };
+
+      await expect(
+        coalaPayContract.addToken(invalidArgs, PROJECT_ID)
+      ).to.be.revertedWith("Recipients are required");
+    });
+
+    it("Fails with zero price", async function () {
+      const invalidArgs = {
+        paymentToken: ethers.ZeroAddress,
+        price: 0,
+        recipients: [
+          {
+            receiver: RECEIVER_ADDRESS,
+            amount: parseEther("0.1"),
+          },
+        ],
+      };
+
+      await expect(
+        coalaPayContract.addToken(invalidArgs, PROJECT_ID)
+      ).to.be.revertedWith("Price is required");
+    });
+
+    it("Fails with zero recipient amount", async function () {
+      const invalidArgs = {
+        paymentToken: ethers.ZeroAddress,
+        price: parseEther("0.1"),
+        recipients: [
+          {
+            receiver: RECEIVER_ADDRESS,
+            amount: 0,
+          },
+        ],
+      };
+
+      await expect(
+        coalaPayContract.addToken(invalidArgs, PROJECT_ID)
+      ).to.be.revertedWith("Recipient amount is 0");
+    });
+
+    it("Fails with zero receiver address", async function () {
+      const invalidArgs = {
+        paymentToken: ethers.ZeroAddress,
+        price: parseEther("0.1"),
+        recipients: [
+          {
+            receiver: ethers.ZeroAddress,
+            amount: parseEther("0.1"),
+          },
+        ],
+      };
+
+      await expect(
+        coalaPayContract.addToken(invalidArgs, PROJECT_ID)
+      ).to.be.revertedWith("Recipient receiver is 0");
+    });
+
+    it("Fails with multiple validation errors - zero amount and zero receiver", async function () {
+      const invalidArgs = {
+        paymentToken: ethers.ZeroAddress,
+        price: parseEther("0.1"),
+        recipients: [
+          {
+            receiver: ethers.ZeroAddress,
+            amount: 0,
+          },
+        ],
+      };
+
+      // Should fail on the first validation error encountered (zero amount)
+      await expect(
+        coalaPayContract.addToken(invalidArgs, PROJECT_ID)
+      ).to.be.revertedWith("Recipient amount is 0");
     });
   });
 });
