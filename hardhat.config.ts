@@ -32,6 +32,14 @@ const hardhatConfig: HardhatUserConfig = {
       url: process.env.PHOENIX_PROVIDER_URL,
       accounts: [process.env.PRIVATE_KEY!],
     },
+    "mainnet-drc": {
+      url: process.env.ETHEREUM_PROVIDER_URL,
+      accounts: [process.env.DRC_PRIVATE_KEY!],
+    },
+    "sepolia-drc": {
+      url: process.env.SEPOLIA_PROVIDER_URL,
+      accounts: [process.env.DRC_PRIVATE_KEY!],
+    }
   },
   gasReporter: {
     enabled: true,
