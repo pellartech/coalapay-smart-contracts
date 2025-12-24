@@ -9,6 +9,8 @@ import "@openzeppelin/contracts/access/AccessControl.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 contract CoalaPay is ERC721, AccessControl, ReentrancyGuard {
+    bytes32 public constant EXECUTOR_ROLE = keccak256("EXECUTOR_ROLE");
+
     using Strings for uint256;
 
     event AddTokenInfo(uint256 tokenId, string projectId, TokenInfo tokenInfo);
@@ -22,7 +24,7 @@ contract CoalaPay is ERC721, AccessControl, ReentrancyGuard {
     }
 
     uint256 public totalSupply;
-    address public feeTo = 0x21c10038fC68d1f05400b2693dAe30772a1736a3;
+    address public feeTo;
     uint256 public feePercent = 500; //5%
     mapping(uint256 => TokenInfo) public tokenInfos;
     mapping(uint256 => string) public tokenUris;
@@ -31,9 +33,13 @@ contract CoalaPay is ERC721, AccessControl, ReentrancyGuard {
     constructor(
         string memory _name,
         string memory _symbol,
-        string memory _baseURI
+        string memory _baseURI,
+        address _initialAdmin,
+        address _feeTo
     ) ERC721(_name, _symbol) {
         _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
+        _grantRole(DEFAULT_ADMIN_ROLE, _initialAdmin);
+        feeTo = _feeTo;
         baseUri = _baseURI;
     }
 
@@ -68,6 +74,7 @@ contract CoalaPay is ERC721, AccessControl, ReentrancyGuard {
     }
 
     function mint(address to, uint256 tokenId) external payable nonReentrant {
+        require(tokenId < totalSupply, "Invalid token");
         _safeMint(to, tokenId);
         TokenInfo memory _tokenInfo = tokenInfos[tokenId];
         uint256 fee = getFee(_tokenInfo.price);
@@ -76,6 +83,15 @@ contract CoalaPay is ERC721, AccessControl, ReentrancyGuard {
 
     function adminMint(address to, uint256 tokenId) external onlyRole(DEFAULT_ADMIN_ROLE) {
         _safeMint(to, tokenId);
+    }
+
+    function executorMint(address donor, address to, uint256 tokenId) external onlyRole(EXECUTOR_ROLE) {
+        require(tokenId < totalSupply, "Invalid token");
+        _safeMint(to, tokenId);
+        TokenInfo memory _tokenInfo = tokenInfos[tokenId];
+        require(_tokenInfo.paymentToken != address(0), "Payment token is not set");
+        uint256 fee = getFee(_tokenInfo.price);
+        transferPaymentFrom(donor, _tokenInfo.receiver, _tokenInfo.paymentToken, _tokenInfo.price, fee);
     }
 
     function transferPayment(address to, address paymentToken, uint256 amount, uint256 fee) internal {
@@ -91,6 +107,11 @@ contract CoalaPay is ERC721, AccessControl, ReentrancyGuard {
         }
     }
 
+    function transferPaymentFrom(address from, address to, address paymentToken, uint256 amount, uint256 fee) internal {
+        SafeERC20.safeTransferFrom(IERC20(paymentToken), from, to, amount);
+        SafeERC20.safeTransferFrom(IERC20(paymentToken), from, feeTo, fee);
+    }
+
     function tokenURI(uint256 _tokenId)
         public
         view
@@ -100,7 +121,7 @@ contract CoalaPay is ERC721, AccessControl, ReentrancyGuard {
         if (bytes(tokenUris[_tokenId]).length > 0) {
             return tokenUris[_tokenId];
         }
-        return string.concat(baseUri, _tokenId.toString());
+        return string.concat(baseUri, Strings.toHexString(uint256(uint160(address(this))), 20), "/", _tokenId.toString());
     }
 
     function getTokenInfo(uint256 _tokenId) public view returns (TokenInfo memory tokenInfo, uint256 fee) {

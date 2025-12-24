@@ -4,13 +4,15 @@ import { config } from "dotenv";
 config();
 const hardhatConfig: HardhatUserConfig = {
   sourcify: {
-    enabled: true
+    enabled: true,
   },
   solidity: {
     version: "0.8.20",
     settings: {
-      optimizer: { enabled: true, runs: 200 },
-      viaIR: true,
+      optimizer: {
+        enabled: true,
+        runs: 200,
+      },
     },
   },
   networks: {
@@ -29,6 +31,14 @@ const hardhatConfig: HardhatUserConfig = {
     phoenix: {
       url: process.env.PHOENIX_PROVIDER_URL,
       accounts: [process.env.PRIVATE_KEY!],
+    },
+    "mainnet-drc": {
+      url: process.env.ETHEREUM_PROVIDER_URL,
+      accounts: [process.env.DRC_PRIVATE_KEY!],
+    },
+    "sepolia-drc": {
+      url: process.env.SEPOLIA_PROVIDER_URL,
+      accounts: [process.env.DRC_PRIVATE_KEY!],
     },
   },
   gasReporter: {
