@@ -3,14 +3,17 @@ import "@nomicfoundation/hardhat-toolbox";
 import { config } from "dotenv";
 config();
 const hardhatConfig: HardhatUserConfig = {
+  sourcify: {
+    enabled: true,
+  },
   solidity: {
     version: "0.8.20",
     settings: {
       optimizer: {
         enabled: true,
-        runs: 200
-      }
-    }
+        runs: 200,
+      },
+    },
   },
   sourcify: {
     enabled: true
@@ -39,7 +42,7 @@ const hardhatConfig: HardhatUserConfig = {
     "sepolia-drc": {
       url: process.env.SEPOLIA_PROVIDER_URL,
       accounts: [process.env.DRC_PRIVATE_KEY!],
-    }
+    },
   },
   gasReporter: {
     enabled: true,
